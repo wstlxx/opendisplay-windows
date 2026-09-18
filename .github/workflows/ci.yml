@@ -46,25 +46,18 @@ jobs:
   # What we DO gate on Windows: the protocol layer and the Winsock networking
   # layer compile with MSVC, and the protocol unit tests run on Windows.
   windows:
-    name: windows build (MSVC)
-    # EXPERIMENT: windows-2019 may ship an intact Media Foundation SDK (the
-    # 2022/2025 images do not). If its VS 2019 is new enough for std::span
-    # (16.8+), the full app target builds here.
-    runs-on: windows-2019
+    name: windows build (MSVC, protocol + net)
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
       - name: Configure
         run: cmake -B build
 
-      - name: Build the full app + tests (Release)
+      - name: Build protocol + net + tests (Release)
         run: >
           cmake --build build --config Release
-          --target opendisplay_receiver --target od_tests
+          --target od_net --target od_tests
 
       - name: Run protocol unit tests on Windows
         run: build\Release\od_tests.exe
-
-      - name: Show built exe
-        shell: pwsh
-        run: Get-Item build\Release\opendisplay_receiver.exe | Format-List Name, Length, FullName
