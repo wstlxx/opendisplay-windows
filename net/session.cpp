@@ -86,7 +86,7 @@ void Session::ReadLoop() {
         while (!closed_) {
             // Poll with a short timeout so liveness + pings keep working
             // even when the sender is quiet.
-            WSAPollfd pfd{};
+            WSAPOLLFD pfd{};
             pfd.fd = sock_;
             pfd.events = POLLIN | POLLHUP;
             const int rc = ::WSAPoll(&pfd, 1, 250);
@@ -112,7 +112,9 @@ void Session::ReadLoop() {
             if (pfd.revents & (POLLERR | POLLNVAL)) break;
             if ((pfd.revents & POLLHUP) && !(pfd.revents & POLLIN)) break;
 
-            const int n = ::recv(sock_, buf.data(), buf.size(), 0);
+            const int n =
+                ::recv(sock_, reinterpret_cast<char*>(buf.data()),
+                       static_cast<int>(buf.size()), 0);
             if (n > 0) {
                 lastDataMs_ = SteadyNowMs();
                 bool valid = true;

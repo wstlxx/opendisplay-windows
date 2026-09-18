@@ -69,9 +69,9 @@ public:
     }
 
     // ---- IMFByteStream ----
-    STDMETHODIMP GetLength(LONGLONG* length) override {
+    STDMETHODIMP GetLength(QWORD* length) override {
         if (!length) return E_POINTER;
-        *length = static_cast<LONGLONG>(
+        *length = static_cast<QWORD>(
             totalBytes_.load(std::memory_order_relaxed));
         return S_OK;
     }
@@ -112,17 +112,22 @@ public:
         }
         return S_OK;
     }
-    STDMETHODIMP SetLength(LONGLONG) override { return E_NOTIMPL; }
-    STDMETHODIMP Seek(const MFGUID*, const PROPVARIANT*, const PROPVARIANT*) override {
+    STDMETHODIMP SetLength(QWORD) override { return E_NOTIMPL; }
+    STDMETHODIMP Seek(MF_SEEK_ORIGIN seekOrigin, const PROPVARIANT* pvRelative,
+                      DWORD dwFlags) override {
+        (void)seekOrigin; (void)pvRelative; (void)dwFlags;
         return MF_E_INVALIDREQUEST; // live stream: no seeking
     }
-    STDMETHODIMP IsCurrentPositionSupported(MFStreamStatus* pStreamStatus) override {
-        if (!pStreamStatus) return E_POINTER;
-        *pStreamStatus = eos ? MF_STREAM_STATUS_ENDED : MF_STREAM_STATUS_READING;
+    STDMETHODIMP IsCurrentPositionSupported(BOOL* pbCurrentPosition) override {
+        if (!pbCurrentPosition) return E_POINTER;
+        *pbCurrentPosition = FALSE; // no random access on a live stream
         return S_OK;
     }
     STDMETHODIMP GetStreamStatus(MFStreamStatus* pStreamStatus) override {
-        return IsCurrentPositionSupported(pStreamStatus);
+        if (!pStreamStatus) return E_POINTER;
+        *pStreamStatus =
+            eos ? MF_STREAM_STATUS_ENDED : MF_STREAM_STATUS_READING;
+        return S_OK;
     }
 
 private:
