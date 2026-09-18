@@ -39,7 +39,13 @@ jobs:
   # real Windows compile errors the Linux box cannot surface.
   windows:
     name: windows build (MSVC)
-    runs-on: windows-latest
+    # windows-latest (the 2025 image, MSBuild 18 / SDK 10.0.26100) ships a
+    # broken/inconsistent Media Foundation SDK: mfapi.h is truncated after
+    # MFCreateAttributes and mfreadwrite.h is effectively empty, so
+    # IMFMediaSourceReader / MFCreateMediaSourceReader / MF_DECODE_TO_DISPLAY /
+    # MFStreamStatus / MF_SEEK_ORIGIN are all missing (see od_mf_diag). The
+    # stable 2022 image has a healthy SDK.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
