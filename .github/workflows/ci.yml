@@ -53,17 +53,20 @@ jobs:
         shell: pwsh
         run: |
           cmake -B build
-          # The VS generator ignores CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION here
-          # and auto-selects the newest SDK (10.0.26100.0), whose Media Foundation
-          # headers are broken (mfreadwrite.h lacks IMFMediaSourceReader & co.).
-          # Force every generated project to target a known-good SDK instead.
+          # The VS generator auto-selects the newest SDK (10.0.26100.0), whose
+          # Media Foundation headers are broken (mfreadwrite.h lacks
+          # IMFMediaSourceReader & co.). Force every generated project to target
+          # a known-good SDK instead.
           $want = '10.0.19041.0'
-          Get-ChildItem build -Filter *.vcxproj -Recurse | ForEach-Object {
-            $c = Get-Content $_.FullName -Raw
-            $c = $c -replace '<WindowsTargetPlatformVersion>[^<]*</WindowsTargetPlatformVersion>', '<WindowsTargetPlatformVersion>' + $want + '</WindowsTargetPlatformVersion>'
-            Set-Content $_.FullName $c
+          $files = @(Get-ChildItem build -Filter *.vcxproj -Recurse -ErrorAction SilentlyContinue)
+          Write-Host ("Found " + $files.Count + " vcxproj files:")
+          $files | ForEach-Object { Write-Host ("  " + $_.FullName) }
+          foreach ($f in $files) {
+            $c = Get-Content $f.FullName -Raw
+            $c = $c -replace '<WindowsTargetPlatformVersion>[^<]*</WindowsTargetPlatformVersion>',
+                ('<WindowsTargetPlatformVersion>' + $want + '</WindowsTargetPlatformVersion>')
+            Set-Content -Path $f.FullName -Value $c -NoNewline
           }
-          Write-Host ("vcxproj WindowsTargetPlatformVersion now: " + ((Select-String -Path (Join-Path 'build' 'od_mf_diag.vcxproj') -Pattern 'WindowsTargetPlatformVersion').Line.Trim()))
 
       - name: Inspect SDK Media Foundation headers
         shell: pwsh
