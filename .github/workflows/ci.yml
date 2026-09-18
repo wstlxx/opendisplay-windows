@@ -50,7 +50,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -B build
+        run: >
+          cmake -B build
+          -DCMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION=10.0.19041.0
 
       - name: Inspect SDK Media Foundation headers
         shell: pwsh

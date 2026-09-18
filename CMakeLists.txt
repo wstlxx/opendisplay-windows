@@ -18,7 +18,10 @@ cmake_minimum_required(VERSION 3.20)
 # makes any Media Foundation decode code fail to compile. 10.0.22621.0 (the
 # Windows 11 SDK) has a healthy Media Foundation SDK. Only affects the VS
 # generator; ignored on Linux. Verified by the od_mf_diag target (video/mf_diag.cpp).
-set(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION "10.0.22621.0")
+# The authoritative pin is passed on the command line in CI as
+# -DCMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION=10.0.19041.0 (a plain set() here
+# is ignored by the VS generator's SDK auto-selection).
+set(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION "10.0.19041.0")
 
 project(opendisplay_receiver CXX)
 
