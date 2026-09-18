@@ -49,10 +49,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure
-        run: >
+      - name: Configure (force a healthy Windows SDK)
+        shell: pwsh
+        run: |
           cmake -B build
-          -DCMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION=10.0.19041.0
+          # The VS generator ignores CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION here
+          # and auto-selects the newest SDK (10.0.26100.0), whose Media Foundation
+          # headers are broken (mfreadwrite.h lacks IMFMediaSourceReader & co.).
+          # Force every generated project to target a known-good SDK instead.
+          $want = '10.0.19041.0'
+          Get-ChildItem build -Filter *.vcxproj -Recurse | ForEach-Object {
+            $c = Get-Content $_.FullName -Raw
+            $c = $c -replace '<WindowsTargetPlatformVersion>[^<]*</WindowsTargetPlatformVersion>', '<WindowsTargetPlatformVersion>' + $want + '</WindowsTargetPlatformVersion>'
+            Set-Content $_.FullName $c
+          }
+          Write-Host ("vcxproj WindowsTargetPlatformVersion now: " + ((Select-String -Path (Join-Path 'build' 'od_mf_diag.vcxproj') -Pattern 'WindowsTargetPlatformVersion').Line.Trim()))
 
       - name: Inspect SDK Media Foundation headers
         shell: pwsh
