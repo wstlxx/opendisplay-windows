@@ -52,6 +52,23 @@ jobs:
       - name: Configure
         run: cmake -B build
 
+      - name: Inspect SDK Media Foundation headers
+        shell: pwsh
+        run: |
+          $dirs = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Include' -Directory |
+                  Where-Object { $_.Name -match '^10\.0\.' }
+          $inc = ($dirs | Sort-Object Name | Select-Object -Last 1).FullName + '\um'
+          Write-Host "Using SDK UM include: $inc"
+          foreach ($f in 'mfapi.h','mfobjects.h','mfidl.h','mfreadwrite.h','mferror.h') {
+            $p = Join-Path $inc $f
+            if (Test-Path $p) { Write-Host ("  {0}: {1} bytes" -f $f, (Get-Item $p).Length) }
+            else { Write-Host ("  {0}: MISSING" -f $f) }
+          }
+          Write-Host "--- grep mfapi.h (expect MFStreamStatus / MF_DECODE_TO_DISPLAY / MF_SEEK_ORIGIN / MFCreateAttributes) ---"
+          Select-String -Path (Join-Path $inc 'mfapi.h') -Pattern 'MFStreamStatus|MF_DECODE_TO_DISPLAY|MF_SEEK_ORIGIN|MF_ATTRIBUTE_VALUE_TYPE|MFCreateAttributes|MF_MT_DEFAULT_CROP' | Select-Object -First 10 | ForEach-Object { '  ' + $_.LineNumber + ': ' + $_.Line.Trim() }
+          Write-Host "--- grep mfreadwrite.h (expect IMFMediaSourceReader / MFCreateMediaSourceReader) ---"
+          Select-String -Path (Join-Path $inc 'mfreadwrite.h') -Pattern 'IMFMediaSourceReader|MFCreateMediaSourceReader|MFCreateMediaSourceFromByteStream' | Select-Object -First 10 | ForEach-Object { '  ' + $_.LineNumber + ': ' + $_.Line.Trim() }
+
       - name: Build MF/D3D diagnostic (SDK sanity check)
         run: cmake --build build --config Release --target od_mf_diag
 
