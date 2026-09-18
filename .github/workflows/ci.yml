@@ -43,7 +43,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure + build (Release)
-        run: |
-          cmake -B build
-          cmake --build build --config Release
+      - name: Configure
+        run: cmake -B build
+
+      - name: Build MF/D3D diagnostic (SDK sanity check)
+        run: cmake --build build --config Release --target od_mf_diag
+
+      - name: Build full app (Release)
+        run: cmake --build build --config Release

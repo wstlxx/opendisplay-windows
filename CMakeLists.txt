@@ -69,6 +69,10 @@ if(WIN32)
     )
     target_link_libraries(od_render PUBLIC od_video d3d11 dxgi d3dcompiler)
 
+    # CI diagnostic: verifies the MF/D3D SDK headers resolve on the runner.
+    add_executable(od_mf_diag video/mf_diag.cpp)
+    target_link_libraries(od_mf_diag PRIVATE mfplat mf mfuuid mfidl d3d11 dxgi)
+
     add_executable(opendisplay_receiver app/main.cpp)
     target_link_libraries(opendisplay_receiver
         PRIVATE od_render od_video od_net user32 gdi32 ole32
