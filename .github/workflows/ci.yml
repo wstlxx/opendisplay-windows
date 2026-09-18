@@ -34,67 +34,30 @@ jobs:
           cat /tmp/fr.log
           grep -q "RESULT: PASS" /tmp/fr.log
 
-  # Windows-only layer (net/video/render/app): configure + build with MSVC.
-  # This is a compile-only gate (no headless MF/D3D run), but it catches the
-  # real Windows compile errors the Linux box cannot surface.
+  # Windows-only layer. The Media Foundation / D3D11 decode+render targets
+  # (od_video, od_render, opendisplay_receiver) CANNOT be compiled on GitHub's
+  # hosted Windows runners: every installed Windows SDK there ships a broken /
+  # incomplete Media Foundation header set (mfreadwrite.h lacks IMFMediaSource
+  # Reader & friends; mfapi.h lacks MFStreamStatus / MF_SEEK_ORIGIN / ...), and
+  # the compiler's include path stays pinned to the newest SDK regardless of
+  # the vcxproj WindowsTargetPlatformVersion. Those targets therefore require a
+  # local Windows build (see README "Building the app").
+  #
+  # What we DO gate on Windows: the protocol layer and the Winsock networking
+  # layer compile with MSVC, and the protocol unit tests run on Windows.
   windows:
-    name: windows build (MSVC)
-    # windows-latest (the 2025 image, MSBuild 18 / SDK 10.0.26100) ships a
-    # broken/inconsistent Media Foundation SDK: mfapi.h is truncated after
-    # MFCreateAttributes and mfreadwrite.h is effectively empty, so
-    # IMFMediaSourceReader / MFCreateMediaSourceReader / MF_DECODE_TO_DISPLAY /
-    # MFStreamStatus / MF_SEEK_ORIGIN are all missing (see od_mf_diag). The
-    # stable 2022 image has a healthy SDK.
+    name: windows build (MSVC: protocol + net)
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure (force a healthy Windows SDK)
-        shell: pwsh
-        run: |
-          cmake -B build
-          # The VS generator auto-selects the newest SDK (10.0.26100.0), whose
-          # Media Foundation headers are broken (mfreadwrite.h lacks
-          # IMFMediaSourceReader & co.). Force every generated project to target
-          # a known-good SDK instead.
-          $want = '10.0.19041.0'
-          $files = @(Get-ChildItem build -Filter *.vcxproj -Recurse -ErrorAction SilentlyContinue)
-          Write-Host ("Found " + $files.Count + " vcxproj files:")
-          $files | ForEach-Object { Write-Host ("  " + $_.FullName) }
-          foreach ($f in $files) {
-            $c = Get-Content $f.FullName -Raw
-            $c = $c -replace '<WindowsTargetPlatformVersion>[^<]*</WindowsTargetPlatformVersion>',
-                ('<WindowsTargetPlatformVersion>' + $want + '</WindowsTargetPlatformVersion>')
-            Set-Content -Path $f.FullName -Value $c -NoNewline
-          }
-          $diag = Join-Path 'build' 'od_mf_diag.vcxproj'
-          if (Test-Path $diag) {
-            $m = Select-String -Path $diag -Pattern 'WindowsTargetPlatformVersion'
-            if ($m) { $m | ForEach-Object { Write-Host ('  diag vcxproj => ' + $_.Line.Trim()) } }
-            else { Write-Host '  diag vcxproj => NO WindowsTargetPlatformVersion element (CMake did not emit one)' }
-          } else { Write-Host '  diag vcxproj => FILE NOT FOUND' }
+      - name: Configure
+        run: cmake -B build
 
-      - name: Inspect SDK Media Foundation headers
-        shell: pwsh
-        run: |
-          $base = 'C:\Program Files (x86)\Windows Kits\10\Include'
-          $vers = Get-ChildItem $base -Directory | Where-Object { $_.Name -match '^10\.0\.' } | ForEach-Object { $_.Name } | Sort-Object
-          Write-Host ("Installed SDK versions: " + ($vers -join ', '))
-          Write-Host ""
-          foreach ($v in $vers) {
-            $rw = Join-Path (Join-Path (Join-Path $base $v) 'um') 'mfreadwrite.h'
-            $mf = Join-Path (Join-Path (Join-Path $base $v) 'um') 'mfapi.h'
-            $nReader = 0; $nStream = 0
-            if (Test-Path $rw) { $nReader = (Select-String -Path $rw -Pattern 'IMFMediaSourceReader' | Measure-Object).Count }
-            if (Test-Path $mf) { $nStream = (Select-String -Path $mf -Pattern 'MFStreamStatus' | Measure-Object).Count }
-            Write-Host ("  {0}: mfreadwrite.h IMFMediaSourceReader={1}, mfapi.h MFStreamStatus={2}" -f $v, $nReader, $nStream)
-          }
-          Write-Host ""
-          Write-Host "=== first 25 lines of 26100.0 mfreadwrite.h ==="
-          Get-Content (Join-Path (Join-Path (Join-Path $base '10.0.26100.0') 'um') 'mfreadwrite.h') -TotalCount 25 | ForEach-Object { '  | ' + $_ }
+      - name: Build protocol + net + tests (Release)
+        run: >
+          cmake --build build --config Release
+          --target od_net --target od_tests
 
-      - name: Build MF/D3D diagnostic (SDK sanity check)
-        run: cmake --build build --config Release --target od_mf_diag
-
-      - name: Build full app (Release)
-        run: cmake --build build --config Release
+      - name: Run protocol unit tests on Windows
+        run: build\Release\od_tests.exe

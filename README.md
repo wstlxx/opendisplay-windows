@@ -59,6 +59,17 @@ build\Release\opendisplay_receiver.exe
 
 The static CRT is used, so the `.exe` runs on machines without the VC++ redist.
 
+> **CI note.** The Media Foundation / D3D11 targets (`od_video`, `od_render`,
+> `opendisplay_receiver`) are built **only locally**, not in CI. GitHub's hosted
+> Windows runners ship a broken/incomplete Media Foundation SDK (every installed
+> `Windows Kits` version has a `mfreadwrite.h` that lacks `IMFMediaSourceReader`
+> and friends, and an `mfapi.h` missing `MFStreamStatus` / `MF_SEEK_ORIGIN` /
+> `MF_DECODE_TO_DISPLAY`), and the compiler's include path stays pinned to the
+> newest SDK regardless of the project's `WindowsTargetPlatformVersion`. CI
+> therefore compiles and tests the platform-independent **protocol** module plus
+> the Winsock **net** module with MSVC, and leaves the decode/render/app targets
+> to a local build like the one above.
+
 ### Protocol module + tests (any OS, no Windows SDK needed)
 
 The protocol core has no platform dependency and is fully tested off-Windows:

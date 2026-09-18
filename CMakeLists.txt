@@ -10,19 +10,6 @@
 #   cmake -B build && cmake --build build && ./build/od_tests
 
 cmake_minimum_required(VERSION 3.20)
-
-# Pin the Windows SDK for the Visual Studio generator. On GitHub's windows
-# runners the newest installed SDK (10.0.26100.0) ships a broken mfreadwrite.h
-# (a MIDL interface stub that lacks IMFMediaSourceReader / MFCreateMediaSource
-# Reader / MFStreamStatus / MF_SEEK_ORIGIN / MF_DECODE_TO_DISPLAY / ...), which
-# makes any Media Foundation decode code fail to compile. 10.0.22621.0 (the
-# Windows 11 SDK) has a healthy Media Foundation SDK. Only affects the VS
-# generator; ignored on Linux. Verified by the od_mf_diag target (video/mf_diag.cpp).
-# The authoritative pin is passed on the command line in CI as
-# -DCMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION=10.0.19041.0 (a plain set() here
-# is ignored by the VS generator's SDK auto-selection).
-set(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION "10.0.19041.0")
-
 project(opendisplay_receiver CXX)
 
 enable_testing()
@@ -81,10 +68,6 @@ if(WIN32)
         render/renderer.cpp
     )
     target_link_libraries(od_render PUBLIC od_video d3d11 dxgi d3dcompiler)
-
-    # CI diagnostic: verifies the MF/D3D SDK headers resolve on the runner.
-    add_executable(od_mf_diag video/mf_diag.cpp)
-    target_link_libraries(od_mf_diag PRIVATE mfplat mf mfuuid mfidl d3d11 dxgi)
 
     add_executable(opendisplay_receiver app/main.cpp)
     target_link_libraries(opendisplay_receiver
