@@ -5,9 +5,9 @@
 
 #ifdef _WIN32
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
+// We deliberately do NOT define WIN32_LEAN_AND_MEAN. Including winsock2.h
+// before windows.h is enough to avoid the winsock.h/winsock2.h conflict, and
+// the Media Foundation / D3D headers expect the full windows.h to be present.
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif

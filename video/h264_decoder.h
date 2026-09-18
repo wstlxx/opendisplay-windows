@@ -29,10 +29,12 @@
 #include "../win32_compat.h"
 
 #ifdef _WIN32
+// Include order matters: mfobjects.h (IMFMediaType) must precede mfidl.h /
+// mfreadwrite.h (IMFMediaSourceReader), whose declarations reference it.
 #include <mfapi.h>
+#include <mfobjects.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
-#include <mfobjects.h>
 #include <mferror.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
