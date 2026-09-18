@@ -46,7 +46,7 @@ jobs:
   # What we DO gate on Windows: the protocol layer and the Winsock networking
   # layer compile with MSVC, and the protocol unit tests run on Windows.
   windows:
-    name: windows build (MSVC: protocol + net)
+    name: windows build (MSVC, protocol + net)
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
