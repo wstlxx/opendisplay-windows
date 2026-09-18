@@ -67,6 +67,12 @@ jobs:
                 ('<WindowsTargetPlatformVersion>' + $want + '</WindowsTargetPlatformVersion>')
             Set-Content -Path $f.FullName -Value $c -NoNewline
           }
+          $diag = Join-Path 'build' 'od_mf_diag.vcxproj'
+          if (Test-Path $diag) {
+            $m = Select-String -Path $diag -Pattern 'WindowsTargetPlatformVersion'
+            if ($m) { $m | ForEach-Object { Write-Host ('  diag vcxproj => ' + $_.Line.Trim()) } }
+            else { Write-Host '  diag vcxproj => NO WindowsTargetPlatformVersion element (CMake did not emit one)' }
+          } else { Write-Host '  diag vcxproj => FILE NOT FOUND' }
 
       - name: Inspect SDK Media Foundation headers
         shell: pwsh
