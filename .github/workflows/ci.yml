@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  # Platform-independent protocol layer: build + unit tests + a real
+  # cross-language integration test (C++ receiver over TCP vs Python sender).
+  protocol:
+    name: protocol (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build + run protocol unit tests
+        run: |
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -I. \
+            protocol/*.cpp tests/test_protocol.cpp -o /tmp/test_protocol
+          /tmp/test_protocol
+
+      - name: Build fake_receiver + sim_sender integration test
+        run: |
+          set -e
+          g++ -std=c++20 -O2 -Wall -Wextra -I. \
+            protocol/*.cpp tools/fake_receiver.cpp -o /tmp/fake_receiver
+          /tmp/fake_receiver --port 9127 --seconds 8 > /tmp/fr.log 2>&1 &
+          FID=$!
+          sleep 0.8
+          timeout 8 python3 tools/sim_sender.py \
+            --port 9127 --file tests/data/sample.h264 || true
+          wait "$FID" || true
+          cat /tmp/fr.log
+          grep -q "RESULT: PASS" /tmp/fr.log
+
+  # Windows-only layer (net/video/render/app): configure + build with MSVC.
+  # This is a compile-only gate (no headless MF/D3D run), but it catches the
+  # real Windows compile errors the Linux box cannot surface.
+  windows:
+    name: windows build (MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure + build (Release)
+        run: |
+          cmake -B build
+          cmake --build build --config Release

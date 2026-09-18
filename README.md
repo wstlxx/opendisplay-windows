@@ -1,0 +1,159 @@
+# opendisplay_windows
+
+A native **Windows 10/11 receiver** for the [OpenDisplay](https://github.com/peetzweg/opendisplay)
+protocol (pv 3). It receives an H.264 screen-cast from a Mac running the OpenDisplay
+sender, decodes it with **Media Foundation** (hardware DXVA where available) and renders
+it with **Direct3D 11** in a window or fullscreen.
+
+No Electron, no Python, no VLC — one small C++20/Win32 executable.
+
+```
+ Mac sender (OpenDisplay)                    this receiver
+ ┌──────────────┐   TCP :9000   ┌──────────────────────────────────────────────┐
+ │ H.264 encode │ ─────────────▶ │ session read thread → VideoQueue → decode    │
+ │ + JSON ctrl  │                │ thread → MF byte stream → reader thread →    │
+ └──────────────┘                │ D3D11 texture → main-thread Renderer::Present│
+                                 └──────────────────────────────────────────────┘
+```
+
+## Features
+
+- **pv 3 protocol**: length-prefixed framing, JSON control demux, Annex-B parsing,
+  SPS/PPS extraction, SPS dimension decode.
+- **Real-time hardware decode** via Media Foundation (`MF_LOW_LATENCY`,
+  `MF_DECODE_TO_DISPLAY`, shared D3D11 device through the DXGI device manager).
+  Falls back to software decode + CPU upload when no DXVA device is present.
+- **D3D11 presentation**: letterboxed, aspect-correct, `FLIP_DISCARD` swap chain,
+  `MF_MT_DEFAULT_CROP` applied (correct 16:9 output from 1080p content).
+- **Live resolution changes**: when the sender's SPS changes (screen resized on the
+  Mac) the decode pipeline is torn down and rebuilt on the next keyframe.
+- **Reliability**: bounded drop-oldest video queue, 5 s liveness timeout, 2 s
+  receiver→sender RTT pings, keyframe requests on decode errors, new-connection
+  replaces old.
+- **Diagnostics**: periodic `stats` to the sender (fps/rtt), console log.
+
+## Layout
+
+```
+protocol/   Platform-independent protocol core (framing, demux, Annex-B, SPS,
+            control JSON). Pure C++20 — compiles and unit-tests on any OS.
+net/        Winsock listener + per-connection session (read loop, control I/O).
+video/      Media Foundation H.264 decoder (IMFByteStream + source reader).
+render/     D3D11 letterbox renderer (fullscreen triangle + crop).
+app/        main(): window, D3D device, threading wiring, fullscreen, stats.
+tools/      sim_sender.py (Mac-sender simulator) + fake_receiver.cpp
+            (cross-language integration harness over real TCP).
+tests/      Protocol unit tests + a real 640x480 H.264 sample (tests/data).
+docs/       RESEARCH.md — the distilled normative pv3 requirements + rationale.
+```
+
+## Build
+
+### The receiver (Windows, Visual Studio 2022)
+
+```powershell
+cmake -B build
+cmake --build build --config Release
+build\Release\opendisplay_receiver.exe
+```
+
+The static CRT is used, so the `.exe` runs on machines without the VC++ redist.
+
+### Protocol module + tests (any OS, no Windows SDK needed)
+
+The protocol core has no platform dependency and is fully tested off-Windows:
+
+```bash
+cmake -B build && cmake --build build
+./build/od_tests          # or: ctest --test-dir build
+```
+
+Or without CMake (just a compiler):
+
+```bash
+g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -I. \
+    protocol/*.cpp tests/test_protocol.cpp -o /tmp/test_protocol
+/tmp/test_protocol
+```
+
+## Run
+
+```
+opendisplay_receiver.exe [--port N] [--log file]
+```
+
+1. Start the receiver (defaults to `0.0.0.0:9000`).
+2. On the Mac, point the OpenDisplay sender at the machine. It connects, sends
+   `hello` → you reply `welcome`, then streams H.264 + control JSON.
+3. **F** toggles fullscreen, **Esc** exits fullscreen, closing the window quits.
+
+The console prints the connection, the decoded stream size, the negotiated RTT,
+and a periodic `fps`/`rtt` line.
+
+## Testing without a Mac
+
+`tools/sim_sender.py` re-encodes nothing — it replays a recorded Annex-B stream
+(`tests/data/sample.h264`, 640×480@25) with the exact pv 3 framing and control
+messages a real sender produces. `tools/fake_receiver.cpp` links the real
+protocol module over a POSIX socket, so you get a genuine cross-language
+integration test:
+
+```bash
+g++ -std=c++20 -O2 -Wall -Wextra -I. protocol/*.cpp \
+    tools/fake_receiver.cpp -o /tmp/fake_receiver
+/tmp/fake_receiver --port 9127 --seconds 8 &
+python3 tools/sim_sender.py --port 9127 --file tests/data/sample.h264
+```
+
+Expect: `hello`/`welcome` handshake, ~25 fps video, `pong` RTT, and
+`RESULT: PASS` when the run completes.
+
+## Architecture & threading
+
+```
+listener thread        accept() → new Session (replaces any old one)
+  └─ session read thread   recv → FrameDecoder → demux
+        ├─ JSON control  → onControl   (main-thread-safe: stats, welcome, ping)
+        └─ video (Annex-B) → onVideo → VideoQueue (cap 4, drop-oldest)
+decode thread          VideoQueue.PopWait → H264Decoder::Submit
+  └─ MF parser/reader thread   ReadSample → onFrame (publishes DecodedFrame)
+main thread (Win32)    message loop → Renderer::Present(latest DecodedFrame)
+```
+
+Key invariants (see `docs/RESEARCH.md` for the full reasoning):
+
+- **Video samples are owned end-to-end**: the session re-serializes each frame
+  into Annex-B with 4-byte start codes and hands a `VideoSample` (its own
+  `std::vector`) to the queue, so no buffer is shared across threads.
+- **SPS/PPS byte-compare drives pipeline rebuilds** (the sender re-encodes on a
+  new SPS); a decode error drops to "await keyframe" and asks for one.
+- **The session's callbacks capture a `weak_ptr` box, not the session itself** —
+  a strong self-reference would leak the session and its read thread.
+- The D3D11 device is created once and shared with Media Foundation through
+  `IMFDXGIDeviceManager`, so decoded frames land directly on the render device.
+
+## Protocol summary (pv 3)
+
+Every message both directions is `[4-byte big-endian length][payload]`.
+
+- A payload is **JSON control** iff `len < 32768` **and** first byte is `{`
+  (0x7B) **and** it contains no NUL byte; otherwise it is a **video frame**.
+- **Sender → receiver**: `welcome`, `streamConfig`, `pong`, `ping` (health),
+  `updateRequired`, `cursor`.
+- **Receiver → sender**: `hello` (first message, carries window size/scale/id),
+  `ping` (RTT, every 2 s), `kf` (keyframe request), `stats` (every ~5 s),
+  `closing`.
+- Video is Annex-B; when an SPS/PPS is present the sender inlines it with the
+  keyframe.
+
+Full normative detail is in `docs/RESEARCH.md`.
+
+## Limitations / known issues
+
+- Single sender at a time (new connection replaces the old one) — per spec.
+- Cursor rendering is parsed but not drawn (out of initial scope).
+- No automatic window resize on stream size change: the fixed window letterboxes
+  the incoming size (avoids a `hello`→re-encode feedback loop).
+- The Windows-only layer (`net/`, `video/`, `render/`, `app/`) cannot be
+  compiled on Linux; it is verified by review + the protocol-level integration
+  test. Build on Windows for the first real compile.
