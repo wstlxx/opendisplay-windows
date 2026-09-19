@@ -167,7 +167,7 @@ LRESULT App::WndProcHandle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_KEYDOWN:
             switch (wp) {
-                case VK_F:  ToggleFullscreen(); return 0;
+                case VK_F1: ToggleFullscreen(); return 0;
                 case VK_ESCAPE:
                     if (fullscreen) ToggleFullscreen();
                     return 0;
@@ -215,7 +215,7 @@ bool App::Setup(int port) {
     }
     LOG_INFO("D3D11 device up (feature level 0x%04X)", obtained);
 
-    LONGLONG resetToken = 0;
+    UINT resetToken = 0;
     if (FAILED(MFCreateDXGIDeviceManager(&resetToken,
                                          dxgiManager.ReleaseAndGetAddressOf())) ||
         FAILED(dxgiManager->ResetDevice(device.Get(), resetToken))) {

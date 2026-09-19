@@ -51,6 +51,10 @@ endif()
 # The receiver application (Windows only).
 # ---------------------------------------------------------------------------
 if(WIN32)
+    # Wide-char Win32: our window code uses L"..." literals, so select the W
+    # variants of the Win32 string APIs (CreateWindowExW, RegisterClassExW, ...).
+    add_compile_definitions(UNICODE _UNICODE)
+
     add_library(od_net STATIC
         net/log.cpp
         net/tcp_listener.cpp
