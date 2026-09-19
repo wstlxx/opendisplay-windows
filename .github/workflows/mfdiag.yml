@@ -7,34 +7,37 @@ jobs:
       - shell: pwsh
         run: |
           $um = "C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\um"
-          function FindLine([string]$f, [string]$pat) {
-              if (-not (Test-Path $f)) { return 0 }
-              $o = & findstr /n /c:$pat $f 2>$null
-              if ($LASTEXITCODE -eq 0 -and $o) { return [int]((($o | Select-Object -First 1) -split ':')[0]) }
-              return 0
+          $hs = @("mfapi.h","mfobjects.h","mfidl.h","mfreadwrite.h","mferror.h")
+          function DumpDef([string]$rx, [int]$a) {
+              foreach ($h in $hs) {
+                  $f = Join-Path $um $h
+                  if (-not (Test-Path $f)) { continue }
+                  $lines = Get-Content $f
+                  for ($i=0; $i -lt $lines.Count; $i++) {
+                      if ($lines[$i] -match $rx) {
+                          Write-Output ("  === DEF $h @ L$($i+1) ===")
+                          $e = [Math]::Min($lines.Count-1, $i+$a)
+                          for ($j=$i; $j -le $e; $j++) { Write-Output ("    L{0}: {1}" -f ($j+1), $lines[$j]) }
+                          return
+                      }
+                  }
+              }
+              Write-Output "  (definition of '$rx' not found in any MF header)"
           }
-          function Show([string]$f, [int]$ln, [int]$b, [int]$a) {
-              if ($ln -eq 0) { Write-Output "    (not found)"; return }
+          Write-Output "### where is IMFByteStream? (all refs) ###"
+          foreach ($h in $hs) {
+              $f = Join-Path $um $h
+              if (-not (Test-Path $f)) { continue }
               $lines = Get-Content $f
-              $s = [Math]::Max(0, $ln-1-$b); $e = [Math]::Min($lines.Count-1, $ln-1+$a)
-              for ($i=$s; $i -le $e; $i++) { Write-Output ("    L{0}: {1}" -f ($i+1), $lines[$i]) }
+              for ($i=0; $i -lt $lines.Count; $i++) {
+                  if ($lines[$i] -match "IMFByteStream") { Write-Output ("  {0} L{1}: {2}" -f $h, ($i+1), $lines[$i].Trim()) }
+              }
           }
-          $mfidl = Join-Path $um "mfidl.h"
-          $mfapi = Join-Path $um "mfapi.h"
-          $mfor  = Join-Path $um "mfobjects.h"
-          $mfrw  = Join-Path $um "mfreadwrite.h"
-
-          Write-Output "### IMFByteStream (anchor IsCurrentPositionSupported) ###"
-          foreach ($f in @($mfidl,$mfapi)) {
-              $ln = FindLine $f "IsCurrentPositionSupported"
-              if ($ln) { Write-Output ("  " + (Split-Path $f -Leaf) + " L$ln"); Show $f $ln 15 3; break }
-          }
-          Write-Output "### MF_SEEK_ORIGIN ###"
-          foreach ($f in @($mfapi,$mfidl)) { $ln = FindLine $f "MF_SEEK_ORIGIN"; if ($ln) { Write-Output ("  " + (Split-Path $f -Leaf) + " L$ln"); Show $f $ln 2 6; break } }
-          Write-Output "### MFStreamStatus ###"
-          foreach ($f in @($mfapi,$mfidl)) { $ln = FindLine $f "MFStreamStatus"; if ($ln) { Write-Output ("  " + (Split-Path $f -Leaf) + " L$ln"); Show $f $ln 2 8; break } }
-          Write-Output "### IMFSourceReader (anchor SetCurrentMediaType, +50) ###"
-          $ln = FindLine $mfrw "SetCurrentMediaType"
-          Show $mfrw $ln 2 52
-          Write-Output "### IMFDXGIDeviceManager (anchor OpenDeviceFromUnknown) ###"
-          foreach ($f in @($mfapi,$mfidl,$mfor)) { $ln = FindLine $f "OpenDeviceFromUnknown"; if ($ln) { Write-Output ("  " + (Split-Path $f -Leaf) + " L$ln"); Show $f $ln 9 3; break } }
+          Write-Output "### IMFByteStream definition (+20) ###"
+          DumpDef "IMFByteStream\s*:" 20
+          Write-Output "### MF_SEEK_ORIGIN enum (+6) ###"
+          DumpDef "MF_SEEK_ORIGIN" 6
+          Write-Output "### MFStreamStatus enum (+8) ###"
+          DumpDef "MFStreamStatus" 8
+          Write-Output "### IMFDXGIDeviceManager definition (+16) ###"
+          DumpDef "IMFDXGIDeviceManager\s*:" 16
