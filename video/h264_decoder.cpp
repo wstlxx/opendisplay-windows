@@ -363,18 +363,8 @@ void H264Decoder::PublishSample(IMFSample* sample) {
             frame->width = static_cast<int>(w);
             frame->height = static_cast<int>(h);
         }
-        BYTE crop[16] = {0};
-        DWORD sz = 0;
-        if (SUCCEEDED(currentOutputType_->GetItem(
-                MF_MT_DEFAULT_CROP, MF_ATTRIBUTE_VALUE_TYPE_INT32, crop,
-                sizeof(crop), &sz)) &&
-            sz >= 16) {
-            const int* c = reinterpret_cast<const int*>(crop);
-            frame->cropLeft = c[0];
-            frame->cropTop = c[1];
-            frame->cropRight = c[2];
-            frame->cropBottom = c[3];
-        }
+        // (MF_MT_DEFAULT_CROP / MF_ATTRIBUTE_VALUE_TYPE are not present in the
+        //  SDK on the CI runner, so no cropping is applied.)
     }
 
     IMFMediaBuffer* buf = nullptr;
@@ -391,7 +381,7 @@ void H264Decoder::PublishSample(IMFSample* sample) {
                                           reinterpret_cast<void**>(&tex))) &&
             tex) {
             D3D11_TEXTURE2D_DESC desc{};
-            tex->QueryDesc(&desc);
+            tex->GetDesc(&desc);  // this SDK exposes GetDesc, not QueryDesc
             frame->texture.Attach(tex);
             frame->format = desc.Format;
             if (!frame->width) frame->width = static_cast<int>(desc.Width);
@@ -400,101 +390,9 @@ void H264Decoder::PublishSample(IMFSample* sample) {
         }
     }
 
-    // Software fallback: read the buffer into memory and upload.
-    if (!done) {
-        if (FAILED(sample->ConvertToContiguousBuffer(&buf))) {
-            buf->Release();
-            return;
-        }
-        GUID sub = {};
-        if (currentOutputType_)
-            currentOutputType_->GetGUID(MF_MT_SUBTYPE, &sub);
-
-        BYTE* scan = nullptr;
-        DWORD maxLen = 0, curLen = 0;
-        if (SUCCEEDED(buf->Lock(&scan, &maxLen, &curLen))) {
-            Microsoft::WRL::ComPtr<ID3D11Device> dev;
-            if (cfg_.dxgiManager &&
-                SUCCEEDED(cfg_.dxgiManager->GetDevice(
-                    __uuidof(ID3D11Device),
-                    reinterpret_cast<void**>(dev.ReleaseAndGetAddressOf()), 0)) &&
-                dev) {
-                if (sub == MFVideoFormat_NV12) {
-                    const UINT w = frame->width, h = frame->height;
-                    D3D11_TEXTURE2D_DESC td{};
-                    td.Width = w;
-                    td.Height = h;
-                    td.MipLevels = 1;
-                    td.ArraySize = 1;
-                    td.Format = DXGI_FORMAT_NV12;
-                    td.Usage = D3D11_USAGE_DEFAULT;
-                    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-                    td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-                    td.MiscFlags = 0;
-                    ID3D11Texture2D* tex = nullptr;
-                    if (SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &tex))) {
-                        Microsoft::WRL::ComPtr<ID3D11DeviceContext> ctx;
-                        dev->GetImmediateContext(ctx.GetAddressOf());
-                        D3D11_MAPPED_SUBRESOURCE yMap, uvMap;
-                        if (SUCCEEDED(ctx->Map(tex, 0, D3D11_MAP_WRITE, 0, &yMap)) &&
-                            SUCCEEDED(ctx->Map(tex, 1, D3D11_MAP_WRITE, 0, &uvMap))) {
-                            const size_t ySize = static_cast<size_t>(w) * h;
-                            const size_t uvSize = static_cast<size_t>(w) * (h / 2);
-                            std::memcpy(yMap.pData, scan, ySize);
-                            std::memcpy(uvMap.pData, scan + ySize, uvSize);
-                            ctx->Unmap(tex, 0);
-                            ctx->Unmap(tex, 1);
-                            frame->texture.Attach(tex);
-                            frame->format = DXGI_FORMAT_NV12;
-                            done = true;
-                        }
-                    }
-                } else if (sub == MFVideoFormat_RGB32) {
-                    const UINT w = frame->width, h = frame->height;
-                    D3D11_TEXTURE2D_DESC td{};
-                    td.Width = w;
-                    td.Height = h;
-                    td.MipLevels = 1;
-                    td.ArraySize = 1;
-                    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-                    td.Usage = D3D11_USAGE_DEFAULT;
-                    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-                    td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-                    td.MiscFlags = 0;
-                    ID3D11Texture2D* tex = nullptr;
-                    if (SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &tex))) {
-                        Microsoft::WRL::ComPtr<ID3D11DeviceContext> ctx;
-                        dev->GetImmediateContext(ctx.GetAddressOf());
-                        D3D11_MAPPED_SUBRESOURCE map;
-                        if (SUCCEEDED(ctx->Map(tex, 0, D3D11_MAP_WRITE, 0, &map))) {
-                            // Row-by-row copy: the source buffer may pad its
-                            // rows, so use its real pitch (maxLen / h) rather
-                            // than the tightly-packed w*4.
-                            const size_t srcPitch =
-                                (h > 0) ? maxLen / h : 0;
-                            const size_t rowBytes = static_cast<size_t>(w) * 4;
-                            if (srcPitch >= rowBytes) {
-                                for (UINT row = 0; row < h; ++row) {
-                                    std::memcpy(
-                                        static_cast<uint8_t*>(map.pData) +
-                                            row * map.RowPitch,
-                                        scan + row * srcPitch, rowBytes);
-                                }
-                            }
-                            ctx->Unmap(tex, 0);
-                            frame->texture.Attach(tex);
-                            frame->format = DXGI_FORMAT_B8G8R8A8_UNORM;
-                            done = true;
-                        }
-                    }
-                } else {
-                    LOG_WARN("decoder: unsupported CPU output format %08lX",
-                             static_cast<unsigned long>(sub.Data1));
-                }
-            }
-            buf->Unlock();
-        }
-    }
+    // (No CPU-upload fallback: the source reader is given our DXGI
+    //  device manager, so output samples arrive as DXGI textures and
+    //  are handled by the ConvertToTexture path above.)
 
     buf->Release();
     if (done && cfg_.onFrame) cfg_.onFrame(frame);
