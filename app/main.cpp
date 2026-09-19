@@ -323,27 +323,26 @@ void App::OnAccept(SOCKET sock, const std::string& peer) {
     // instead. The callbacks only ever run on this session's read thread, so
     // resolving the weak_ptr succeeds for their whole lifetime.
     auto self = std::make_shared<std::weak_ptr<net::Session>>();
-    net::Session::Callbacks cbs{
-        .onControl = [this, self](const ControlMessage& m) {
-            if (auto sp = self->lock()) HandleControl(sp.get(), m);
-        },
-        .onVideo = [this](VideoSample&& v) {
-            if (queue.Push(std::move(v))) {
-                // Drop-oldest happened; log at most every 128 drops.
-                if ((queue.Dropped() & 127) == 1) {
-                    LOG_WARN("video queue full, dropped %llu frames so far",
-                             (unsigned long long)queue.Dropped());
-                }
+    net::Session::Callbacks cbs;
+    cbs.onControl = [this, self](const ControlMessage& m) {
+        if (auto sp = self->lock()) HandleControl(sp.get(), m);
+    };
+    cbs.onVideo = [this](net::VideoSample&& v) {
+        if (queue.Push(std::move(v))) {
+            // Drop-oldest happened; log at most every 128 drops.
+            if ((queue.Dropped() & 127) == 1) {
+                LOG_WARN("video queue full, dropped %llu frames so far",
+                         (unsigned long long)queue.Dropped());
             }
-        },
-        .onClosed = [this, self, peer](bool clean) {
-            LOG_INFO("session %s closed (%s)", peer.c_str(),
-                     clean ? "peer closed" : "error");
-            std::lock_guard lock(sessionMutex);
-            if (auto sp = self->lock()) {
-                if (session == sp) session.reset();
-            }
-        },
+        }
+    };
+    cbs.onClosed = [this, self, peer](bool clean) {
+        LOG_INFO("session %s closed (%s)", peer.c_str(),
+                 clean ? "peer closed" : "error");
+        std::lock_guard lock(sessionMutex);
+        if (auto sp = self->lock()) {
+            if (session == sp) session.reset();
+        }
     };
     auto s = std::make_shared<net::Session>(sock, peer, std::move(cbs));
     *self = s;  // wire up the weak ref (no ownership cycle)
