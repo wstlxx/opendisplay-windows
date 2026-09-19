@@ -13,7 +13,5 @@ jobs:
           $vs = & $vswhere -latest -products * -property installationPath
           $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvarsall.bat"
           Write-Output "VS: $vs"
-          foreach ($p in @("PROBE_CROP","PROBE_AVT","PROBE_QD","PROBE_GD")) {
-              Write-Output "===== compiling with -$p ====="
-              cmd /c "call `"$vcvars`" x64 >nul && cl /nologo /EHsc /std:c++17 /D$p /D_UNICODE /DUNICODE probe.cpp /Fe:probe.exe 2>&1"
-          }
+          Write-Output "===== compiling probe (D3D-first) ====="
+          cmd /c "call `"$vcvars`" x64 >nul && cl /nologo /EHsc /std:c++17 /D_UNICODE /DUNICODE probe.cpp /Fe:probe.exe 2>&1"
