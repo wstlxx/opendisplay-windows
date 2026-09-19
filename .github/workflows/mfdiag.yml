@@ -1,5 +1,5 @@
 name: mfdiag
-on: workflow_dispatch
+on: push
 jobs:
   diag:
     runs-on: windows-2022
