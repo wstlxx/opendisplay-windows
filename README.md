@@ -91,7 +91,7 @@ opendisplay_receiver.exe [--port N] [--log file]
 1. Start the receiver (defaults to `0.0.0.0:9000`).
 2. On the Mac, point the OpenDisplay sender at the machine. It connects, sends
    `hello` → you reply `welcome`, then streams H.264 + control JSON.
-3. **F** toggles fullscreen, **Esc** exits fullscreen, closing the window quits.
+3. **F1** toggles fullscreen, **Esc** exits fullscreen, closing the window quits.
 
 The console prints the connection, the decoded stream size, the negotiated RTT,
 and a periodic `fps`/`rtt` line.
@@ -160,6 +160,10 @@ Full normative detail is in `docs/RESEARCH.md`.
 - Cursor rendering is parsed but not drawn (out of initial scope).
 - No automatic window resize on stream size change: the fixed window letterboxes
   the incoming size (avoids a `hello`→re-encode feedback loop).
-- The Windows-only layer (`net/`, `video/`, `render/`, `app/`) cannot be
-  compiled on Linux; it is verified by review + the protocol-level integration
-  test. Build on Windows for the first real compile.
+- The Windows-only layer (`net/`, `video/`, `render/`, `app/`) needs the
+  Windows SDK, so it is built in CI on a `windows-2022` runner (not on Linux).
+  It is additionally cross-checked by the protocol-level integration test.
+- The CI runner ships a reduced Windows SDK: `ID3D11Texture2D::GetDesc`, no
+  `MF_MT_DEFAULT_CROP`/`MF_ATTRIBUTE_VALUE_TYPE`, and no
+  `IMFDXGIDeviceManager::GetDevice`. The code is written against that surface
+  (and works against the full SDK too).
