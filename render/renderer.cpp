@@ -97,7 +97,7 @@ bool Renderer::Init(HWND hwnd, Microsoft::WRL::ComPtr<ID3D11Device> device,
     sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
     sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
     sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sd.MaxLOD = D3D11_MAX_LOD;
+    sd.MaxLOD = 16.0f;  // D3D11_MAX_LOD (absent in the CI runner's SDK)
     if (FAILED(device_->CreateSamplerState(&sd, sampler_.ReleaseAndGetAddressOf()))) {
         LOG_ERROR("renderer: CreateSamplerState failed");
         return false;
@@ -115,7 +115,8 @@ bool Renderer::CreateSwapChain(int w, int h) {
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.BufferCount = 2;
     scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    scd.OutputWindow = swapHwnd_;
+    // (DXGI_SWAP_CHAIN_DESC1::OutputWindow is absent in the CI runner's SDK;
+    //  the HWND is passed separately to CreateSwapChainForHwnd below.)
 
     if (FAILED(factory_->CreateSwapChainForHwnd(
             device_.Get(), swapHwnd_, &scd, nullptr, nullptr,
