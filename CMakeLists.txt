@@ -66,7 +66,7 @@ if(WIN32)
         video/h264_decoder.cpp
     )
     target_link_libraries(od_video
-        PUBLIC od_protocol mfplat mf mfuuid mfidl mfreadwrite d3d11 dxgi)
+        PUBLIC od_protocol mfplat mf mfuuid mfreadwrite d3d11 dxgi)
 
     add_library(od_render STATIC
         render/renderer.cpp
