@@ -4,14 +4,27 @@ jobs:
   diag:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
-      - name: Compile probe per symbol
-        shell: pwsh
+      - shell: pwsh
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path $vswhere)) { $vswhere = "${env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe" }
-          $vs = & $vswhere -latest -products * -property installationPath
-          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvarsall.bat"
-          Write-Output "VS: $vs"
-          Write-Output "===== compiling probe (D3D-first) ====="
-          cmd /c "call `"$vcvars`" x64 >nul && cl /nologo /EHsc /std:c++17 /D_UNICODE /DUNICODE probe.cpp /Fe:probe.exe 2>&1"
+          $um = "C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\um"
+          Write-Output "### locate across ALL um headers ###"
+          foreach ($sym in @("MF_ATTRIBUTE_VALUE_TYPE","MF_MT_DEFAULT_CROP","IMFDXGIDeviceManager")) {
+              Write-Output "  -- $sym --"
+              Get-ChildItem $um -Filter *.h | ForEach-Object {
+                  $m = Select-String -Path $_.FullName -Pattern ([regex]::Escape($sym)) -SimpleMatch
+                  if ($m) { Write-Output ("    {0} L{1}: {2}" -f $_.Name, $m[0].LineNumber, $m[0].Line.Trim()) }
+              }
+          }
+          Write-Output "### ID3D11Texture2D body (d3d11.h) ###"
+          $f = Join-Path $um "d3d11.h"
+          if (Test-Path $f) {
+              $lines = Get-Content $f
+              for ($i=0; $i -lt $lines.Count; $i++) {
+                  if ($lines[$i] -match "ID3D11Texture2D\s*:") {
+                      for ($j=$i; $j -le ($i+24) -and $j -lt $lines.Count; $j++) { Write-Output ("    L{0}: {1}" -f ($j+1), $lines[$j]) }
+                      break
+                  }
+              }
+          }
+          Write-Output "### d3d11.h total lines ###"
+          if (Test-Path $f) { Write-Output ("    " + (Get-Content $f).Count) }
