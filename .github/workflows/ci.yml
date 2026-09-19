@@ -34,17 +34,10 @@ jobs:
           cat /tmp/fr.log
           grep -q "RESULT: PASS" /tmp/fr.log
 
-  # Windows-only layer. The Media Foundation / D3D11 decode+render targets
-  # (od_video, od_render, opendisplay_receiver) CANNOT be compiled on GitHub's
-  # hosted Windows runners: every installed Windows SDK there ships a broken /
-  # incomplete Media Foundation header set (mfreadwrite.h lacks IMFMediaSource
-  # Reader & friends; mfapi.h lacks MFStreamStatus / MF_SEEK_ORIGIN / ...), and
-  # the compiler's include path stays pinned to the newest SDK regardless of
-  # the vcxproj WindowsTargetPlatformVersion. Those targets therefore require a
-  # local Windows build (see README "Building the app").
-  #
-  # What we DO gate on Windows: the protocol layer and the Winsock networking
-  # layer compile with MSVC, and the protocol unit tests run on Windows.
+  # Windows-only layer: the full app is built with MSVC -- od_net (Winsock),
+  # od_video (Media Foundation decode), od_render (D3D11), and
+  # opendisplay_receiver. The protocol unit tests run too, and the receiver
+  # exe is uploaded as an artifact.
   windows:
     name: windows build (MSVC)
     runs-on: windows-2022

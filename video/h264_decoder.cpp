@@ -23,15 +23,16 @@ public:
     std::mutex mutex;
     std::condition_variable cv;
     bool eos = false;
+    bool shutdown_ = false;
     // Cumulative bytes ever written; GetLength reports this so the parser
     // sees the live stream as growing (Read consumes `data`, so size() alone
     // would shrink and look like an ending stream).
     std::atomic<long long> totalBytes_{0};
 
-    bool Write(const uint8_t* p, size_t n) {
+    bool Append(const uint8_t* p, size_t n) {
         {
             std::lock_guard lock(mutex);
-            if (eos) return false;
+            if (eos || shutdown_) return false;
             data.insert(data.end(), p, p + n);
             totalBytes_.fetch_add(static_cast<long long>(n),
                                   std::memory_order_relaxed);
@@ -44,6 +45,15 @@ public:
         {
             std::lock_guard lock(mutex);
             eos = true;
+        }
+        cv.notify_all();
+    }
+
+    // Unblock a thread parked in Read() so the reader can be torn down.
+    void SignalShutdown() {
+        {
+            std::lock_guard lock(mutex);
+            shutdown_ = true;
         }
         cv.notify_all();
     }
@@ -69,27 +79,29 @@ public:
     }
 
     // ---- IMFByteStream ----
+    STDMETHODIMP GetCapabilities(DWORD* pdwCapabilities) override {
+        if (!pdwCapabilities) return E_POINTER;
+        *pdwCapabilities = 0; // no seeking, no async
+        return S_OK;
+    }
     STDMETHODIMP GetLength(QWORD* length) override {
         if (!length) return E_POINTER;
         *length = static_cast<QWORD>(
             totalBytes_.load(std::memory_order_relaxed));
         return S_OK;
     }
-    STDMETHODIMP SetCurrentPosition(const PROPVARIANT* newValue) override {
-        (void)newValue;
-        return S_OK; // position is always "now"
-    }
-    STDMETHODIMP GetCurrentPosition(PROPVARIANT* currentValue) override {
-        if (!currentValue) return E_POINTER;
-        PropVariantInit(currentValue);
-        currentValue->vt = VT_I8;
-        currentValue->llVal = 0;
+    STDMETHODIMP GetCurrentPosition(QWORD* pqwPosition) override {
+        if (!pqwPosition) return E_POINTER;
+        *pqwPosition = 0;
         return S_OK;
+    }
+    STDMETHODIMP SetCurrentPosition(QWORD) override {
+        return S_OK; // position is always "now"
     }
     STDMETHODIMP IsEndOfStream(BOOL* value) override {
         if (!value) return E_POINTER;
         std::lock_guard lock(mutex);
-        *value = eos ? TRUE : FALSE;
+        *value = (eos && data.empty()) ? TRUE : FALSE;
         return S_OK;
     }
     STDMETHODIMP Read(BYTE* pBuffer, ULONG cBuffer, ULONG* pbRead) override {
@@ -97,7 +109,9 @@ public:
         *pbRead = 0;
         {
             std::unique_lock lock(mutex);
-            cv.wait(lock, [this] { return eos || !data.empty(); });
+            cv.wait(lock,
+                    [this] { return shutdown_ || eos || !data.empty(); });
+            if (shutdown_) return MF_E_SHUTDOWN;
             if (data.empty()) {
                 // EOS with nothing left: signal end of stream so the parser
                 // finalizes (returning S_OK/0 here can make it busy-poll).
@@ -113,20 +127,21 @@ public:
         return S_OK;
     }
     STDMETHODIMP SetLength(QWORD) override { return E_NOTIMPL; }
-    STDMETHODIMP Seek(MF_SEEK_ORIGIN seekOrigin, const PROPVARIANT* pvRelative,
-                      DWORD dwFlags) override {
-        (void)seekOrigin; (void)pvRelative; (void)dwFlags;
-        return MF_E_INVALIDREQUEST; // live stream: no seeking
+    STDMETHODIMP BeginRead(BYTE*, ULONG, IMFAsyncCallback*, IUnknown*) override {
+        return E_NOTIMPL;
     }
-    STDMETHODIMP IsCurrentPositionSupported(BOOL* pbCurrentPosition) override {
-        if (!pbCurrentPosition) return E_POINTER;
-        *pbCurrentPosition = FALSE; // no random access on a live stream
-        return S_OK;
+    STDMETHODIMP EndRead(IMFAsyncResult*, ULONG*) override { return E_NOTIMPL; }
+    STDMETHODIMP Write(const BYTE*, ULONG, ULONG*) override { return E_NOTIMPL; }
+    STDMETHODIMP BeginWrite(const BYTE*, ULONG, IMFAsyncCallback*, IUnknown*) override {
+        return E_NOTIMPL;
     }
-    STDMETHODIMP GetStreamStatus(MFStreamStatus* pStreamStatus) override {
-        if (!pStreamStatus) return E_POINTER;
-        *pStreamStatus =
-            eos ? MF_STREAM_STATUS_ENDED : MF_STREAM_STATUS_READING;
+    STDMETHODIMP EndWrite(IMFAsyncResult*, ULONG*) override { return E_NOTIMPL; }
+    STDMETHODIMP Seek(MFBYTESTREAM_SEEK_ORIGIN, LONGLONG, DWORD, QWORD*) override {
+        return E_NOTIMPL; // live stream: no seeking
+    }
+    STDMETHODIMP Flush() override { return S_OK; }
+    STDMETHODIMP Close() override {
+        SignalShutdown();
         return S_OK;
     }
 
@@ -158,17 +173,13 @@ void H264Decoder::StopReader() {
     running_ = false;
     pipelineReady_ = false;
     // Unblock a parser parked inside the current stream's Read().
-    if (stream_) stream_->SetEos();
+    if (stream_) stream_->SignalShutdown();
     if (readerThread_.joinable()) {
         readerThread_.join();
     }
     readerThread_ = std::thread();
-    // Shut down the source reader (and the media source it owns) now that
-    // the read thread has exited.
-    if (reader_) {
-        reader_->Shutdown();
-        reader_.Reset();
-    }
+    // The read thread has exited; release the source reader.
+    reader_.Reset();
 }
 
 void H264Decoder::RequestKeyframe() {
@@ -189,7 +200,7 @@ bool H264Decoder::CreatePipeline(const net::VideoSample* firstKeyframe) {
     // the same stream concurrently.
     stream_ = new ByteStreamSource();
     if (firstKeyframe && !firstKeyframe->annexb.empty()) {
-        stream_->Write(firstKeyframe->annexb.data(), firstKeyframe->annexb.size());
+        stream_->Append(firstKeyframe->annexb.data(), firstKeyframe->annexb.size());
     }
 
     Microsoft::WRL::ComPtr<IMFAttributes> attrs;
@@ -207,9 +218,8 @@ bool H264Decoder::CreatePipeline(const net::VideoSample* firstKeyframe) {
     }
 
     // One call builds the media source + source reader over our byte stream.
-    Microsoft::WRL::ComPtr<ByteStreamSource> streamCom(stream_.get());
     hr = MFCreateSourceReaderFromByteStream(
-        streamCom.Get(), attrs.Get(), reader_.ReleaseAndGetAddressOf());
+        stream_.Get(), attrs.Get(), reader_.ReleaseAndGetAddressOf());
     if (FAILED(hr)) {
         LOG_ERROR("decoder: MFCreateSourceReaderFromByteStream failed: 0x%lX",
                   hr);
@@ -282,7 +292,7 @@ void H264Decoder::Submit(net::VideoSample&& s) {
     }
 
     // 3) Steady state: feed the byte stream.
-    if (!stream_->Write(s.annexb.data(), s.annexb.size())) {
+    if (!stream_->Append(s.annexb.data(), s.annexb.size())) {
         // EOS was set underneath us (rebuild race): rebuild on this frame
         // if it is a keyframe, otherwise wait.
         std::lock_guard lock(rebuildMutex_);
@@ -377,7 +387,8 @@ void H264Decoder::PublishSample(IMFSample* sample) {
     if (SUCCEEDED(buf->QueryInterface(__uuidof(IMFDXGIBuffer),
                                       reinterpret_cast<void**>(dxgiBuf.ReleaseAndGetAddressOf())))) {
         ID3D11Texture2D* tex = nullptr;
-        if (SUCCEEDED(dxgiBuf->GetResource(0, reinterpret_cast<void**>(&tex))) &&
+        if (SUCCEEDED(dxgiBuf->GetResource(__uuidof(ID3D11Texture2D),
+                                          reinterpret_cast<void**>(&tex))) &&
             tex) {
             D3D11_TEXTURE2D_DESC desc{};
             tex->QueryDesc(&desc);
@@ -395,7 +406,7 @@ void H264Decoder::PublishSample(IMFSample* sample) {
             buf->Release();
             return;
         }
-        GUID sub = GUID_EMPTY;
+        GUID sub = {};
         if (currentOutputType_)
             currentOutputType_->GetGUID(MF_MT_SUBTYPE, &sub);
 
@@ -403,11 +414,10 @@ void H264Decoder::PublishSample(IMFSample* sample) {
         DWORD maxLen = 0, curLen = 0;
         if (SUCCEEDED(buf->Lock(&scan, &maxLen, &curLen))) {
             Microsoft::WRL::ComPtr<ID3D11Device> dev;
-            LONGLONG token = 0;
             if (cfg_.dxgiManager &&
-                SUCCEEDED(cfg_.dxgiManager->GetDevice(__uuidof(ID3D11Device),
-                                                      reinterpret_cast<void**>(dev.ReleaseAndGetAddressOf()),
-                                                      &token)) &&
+                SUCCEEDED(cfg_.dxgiManager->GetDevice(
+                    __uuidof(ID3D11Device),
+                    reinterpret_cast<void**>(dev.ReleaseAndGetAddressOf()), 0)) &&
                 dev) {
                 if (sub == MFVideoFormat_NV12) {
                     const UINT w = frame->width, h = frame->height;
