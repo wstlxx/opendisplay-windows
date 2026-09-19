@@ -1,0 +1,49 @@
+name: mfdiag
+on: workflow_dispatch
+jobs:
+  diag:
+    runs-on: windows-2022
+    steps:
+      - shell: pwsh
+        run: |
+          $k = "C:\Program Files (x86)\Windows Kits\10"
+          Write-Output "=== Include SDK versions ==="
+          Get-ChildItem "$k\Include" -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Output $_.Name }
+          Write-Output "=== Lib SDK versions ==="
+          Get-ChildItem "$k\Lib" -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Output $_.Name }
+
+          function Test-Sym([string]$path, [string]$sym) {
+              if (-not (Test-Path $path)) { return "MISSING" }
+              findstr /m /c:$sym "$path" | Out-Null
+              if ($LASTEXITCODE -eq 0) { return "FOUND" }
+              if ($LASTEXITCODE -eq 1) { return "absent" }
+              return "err($LASTEXITCODE)"
+          }
+
+          Write-Output "=== mfreadwrite.h: IMFMediaSourceReader / MFCreateMediaSourceReader ==="
+          Get-ChildItem "$k\Include" -Directory | ForEach-Object {
+              $f = Join-Path $_.FullName "um\mfreadwrite.h"
+              $sz = if (Test-Path $f) { (Get-Item $f).Length } else { 0 }
+              Write-Output ("{0} (size {1}): reader={2} create={3}" -f $_.Name, $sz, (Test-Sym $f "IMFMediaSourceReader"), (Test-Sym $f "MFCreateMediaSourceReader"))
+          }
+
+          Write-Output "=== mfapi.h symbols per SDK ==="
+          $syms = @("MFStreamStatus","MF_SEEK_ORIGIN","MF_DECODE_TO_DISPLAY","MF_ATTRIBUTE_VALUE_TYPE_INT32","MF_SOURCE_READER_D3DManager","MF_MT_DEFAULT_CROP")
+          foreach ($s in $syms) {
+              $line = $s + ":"
+              Get-ChildItem "$k\Include" -Directory | ForEach-Object {
+                  $f = Join-Path $_.FullName "um\mfapi.h"
+                  $short = $_.Name -replace "10\.0\.",""
+                  $line += "  $short=$(Test-Sym $f $s)"
+              }
+              Write-Output $line
+          }
+
+          Write-Output "=== size of mfapi.h + mfreadwrite.h per SDK ==="
+          Get-ChildItem "$k\Include" -Directory | ForEach-Object {
+              $a = Join-Path $_.FullName "um\mfapi.h"
+              $b = Join-Path $_.FullName "um\mfreadwrite.h"
+              $sa = if (Test-Path $a) { (Get-Item $a).Length } else { 0 }
+              $sb = if (Test-Path $b) { (Get-Item $b).Length } else { 0 }
+              Write-Output ("{0}: mfapi={1} mfreadwrite={2}" -f $_.Name, $sa, $sb)
+          }
