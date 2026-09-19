@@ -147,8 +147,6 @@ bool H264Decoder::Init() { return true; }
 void H264Decoder::Shutdown() {
     std::lock_guard lock(rebuildMutex_);
     StopReader();
-    source_.Reset();
-    reader_.Reset();
     currentOutputType_.Reset();
     lastSps_.clear();
     lastPps_.clear();
@@ -165,6 +163,12 @@ void H264Decoder::StopReader() {
         readerThread_.join();
     }
     readerThread_ = std::thread();
+    // Shut down the source reader (and the media source it owns) now that
+    // the read thread has exited.
+    if (reader_) {
+        reader_->Shutdown();
+        reader_.Reset();
+    }
 }
 
 void H264Decoder::RequestKeyframe() {
@@ -195,29 +199,21 @@ bool H264Decoder::CreatePipeline(const net::VideoSample* firstKeyframe) {
         return false;
     }
 
-    // Decode to the D3D11 device (hardware decode) with low latency.
-    attrs->SetUINT32(MF_DECODE_TO_DISPLAY, TRUE);
+    // Low-latency decode; route video to our D3D11 device for hardware
+    // decode (output arrives as DXGI textures).
     attrs->SetUINT32(MF_LOW_LATENCY, TRUE);
     if (cfg_.dxgiManager) {
-        attrs->SetUnknown(MF_SOURCE_READER_D3DManager, cfg_.dxgiManager.Get());
+        attrs->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, cfg_.dxgiManager.Get());
     }
 
+    // One call builds the media source + source reader over our byte stream.
     Microsoft::WRL::ComPtr<ByteStreamSource> streamCom(stream_.get());
-    hr = MFCreateMediaSourceFromByteStream(streamCom.Get(), attrs.Get(),
-                                           source_.ReleaseAndGetAddressOf());
+    hr = MFCreateSourceReaderFromByteStream(
+        streamCom.Get(), attrs.Get(), reader_.ReleaseAndGetAddressOf());
     if (FAILED(hr)) {
-        LOG_ERROR("decoder: MFCreateMediaSourceFromByteStream failed: 0x%lX",
+        LOG_ERROR("decoder: MFCreateSourceReaderFromByteStream failed: 0x%lX",
                   hr);
-        source_.Reset();
-        return false;
-    }
-
-    hr = MFCreateMediaSourceReader(source_.Get(), attrs.Get(),
-                                   reader_.ReleaseAndGetAddressOf());
-    if (FAILED(hr)) {
-        LOG_ERROR("decoder: MFCreateMediaSourceReader failed: 0x%lX", hr);
         reader_.Reset();
-        source_.Reset();
         return false;
     }
 
@@ -268,8 +264,6 @@ void H264Decoder::Submit(net::VideoSample&& s) {
     if ((spsChanged || ppsChanged) && s.isKeyframe) {
         std::lock_guard lock(rebuildMutex_);
         StopReader();
-        source_.Reset();
-        reader_.Reset();
         currentOutputType_.Reset();
         if (CreatePipeline(&s)) {
             lastSps_ = s.sps;

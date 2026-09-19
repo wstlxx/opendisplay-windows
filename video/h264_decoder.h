@@ -30,7 +30,7 @@
 
 #ifdef _WIN32
 // Include order matters: mfobjects.h (IMFMediaType) must precede mfidl.h /
-// mfreadwrite.h (IMFMediaSourceReader), whose declarations reference it.
+// mfreadwrite.h (IMFSourceReader), whose declarations reference it.
 #include <mfapi.h>
 #include <mfobjects.h>
 #include <mfidl.h>
@@ -104,8 +104,7 @@ private:
     // ---- pipeline objects (owned during a generation) ----
 #ifdef _WIN32
     Microsoft::WRL::ComPtr<ByteStreamSource> stream_;
-    Microsoft::WRL::ComPtr<IMFMediaSource> source_;
-    Microsoft::WRL::ComPtr<IMFMediaSourceReader> reader_;
+    Microsoft::WRL::ComPtr<IMFSourceReader> reader_;
     Microsoft::WRL::ComPtr<IMFMediaType> currentOutputType_;
     std::thread readerThread_;
     std::atomic<uint64_t> generation_{0};

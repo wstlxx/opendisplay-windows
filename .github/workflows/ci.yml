@@ -46,7 +46,7 @@ jobs:
   # What we DO gate on Windows: the protocol layer and the Winsock networking
   # layer compile with MSVC, and the protocol unit tests run on Windows.
   windows:
-    name: windows build (MSVC, protocol + net)
+    name: windows build (MSVC)
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -54,10 +54,16 @@ jobs:
       - name: Configure
         run: cmake -B build
 
-      - name: Build protocol + net + tests (Release)
+      - name: Build the full app + tests (Release)
         run: >
           cmake --build build --config Release
-          --target od_net --target od_tests
+          --target opendisplay_receiver --target od_tests
 
       - name: Run protocol unit tests on Windows
         run: build\Release\od_tests.exe
+
+      - name: Upload the receiver exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: opendisplay_receiver
+          path: build/Release/opendisplay_receiver.exe
