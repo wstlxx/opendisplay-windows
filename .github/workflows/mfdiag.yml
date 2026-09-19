@@ -4,41 +4,16 @@ jobs:
   diag:
     runs-on: windows-2022
     steps:
-      - shell: pwsh
+      - uses: actions/checkout@v4
+      - name: Compile probe per symbol
+        shell: pwsh
         run: |
-          $um = "C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\um"
-          $mf = @("mfapi.h","mfobjects.h","mfidl.h","mfreadwrite.h","mferror.h")
-          function GrepAll([string]$sym) {
-              foreach ($h in $mf) {
-                  $f = Join-Path $um $h
-                  if (-not (Test-Path $f)) { continue }
-                  $lines = Get-Content $f
-                  for ($i=0; $i -lt $lines.Count; $i++) {
-                      if ($lines[$i] -match [regex]::Escape($sym)) {
-                          Write-Output ("  {0} L{1}: {2}" -f $h, ($i+1), $lines[$i].Trim())
-                          return
-                      }
-                  }
-              }
-              Write-Output "  '$sym' -> NOT FOUND in any mf header"
-          }
-          Write-Output "### MF_MT_DEFAULT_CROP ###"
-          GrepAll "MF_MT_DEFAULT_CROP"
-          Write-Output "### MF_ATTRIBUTE_VALUE_TYPE_INT32 ###"
-          GrepAll "MF_ATTRIBUTE_VALUE_TYPE_INT32"
-          Write-Output "### MF_ATTRIBUTE_VALUE_TYPE (enum) ###"
-          GrepAll "MF_ATTRIBUTE_VALUE_TYPE"
-          Write-Output "### d3d11.h QueryDesc ###"
-          $d3d = Join-Path $um "d3d11.h"
-          if (Test-Path $d3d) {
-              $lines = Get-Content $d3d
-              $c = 0
-              for ($i=0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match "QueryDesc") { Write-Output ("  d3d11.h L{0}: {1}" -f ($i+1), $lines[$i].Trim()); $c++; if ($c -ge 3) { break } } }
-          } else { Write-Output "  d3d11.h NOT at $d3d" }
-          Write-Output "### IMFDXGIDeviceManager body ###"
-          $lines = Get-Content (Join-Path $um "mfapi.h")
-          $inif = $false
-          for ($i=0; $i -lt $lines.Count; $i++) {
-              if ($lines[$i] -match "IMFDXGIDeviceManager\s*:") { $inif = $true }
-              if ($inif) { Write-Output ("  mfapi.h L{0}: {1}" -f ($i+1), $lines[$i]); if ($lines[$i] -match "^\s*\};") { break } }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { $vswhere = "${env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe" }
+          $vs = & $vswhere -latest -products * -property installationPath
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvarsall.bat"
+          Write-Output "VS: $vs"
+          foreach ($p in @("PROBE_CROP","PROBE_AVT","PROBE_QD","PROBE_GD")) {
+              Write-Output "===== compiling with -$p ====="
+              cmd /c "call `"$vcvars`" x64 >nul && cl /nologo /EHsc /std:c++17 /D$p /D_UNICODE /DUNICODE probe.cpp /Fe:probe.exe 2>&1"
           }
