@@ -32,7 +32,7 @@ jobs:
           Write-Output "##### IMFSourceReader interface (via ReadSample) #####"
           Block "mfreadwrite.h" "ReadSample" 2 26
           Write-Output "##### does IMFSourceReader have Shutdown? #####"
-          foreach ($h in @("mfreadwrite.h","mfidl.h")) { $f = Join-Path $um $h; $m = Select-String -Path $f -Pattern "Shutdown" -SimpleMatch; if ($m) { Write-Output "  $h: Shutdown at L$($m[0].LineNumber): $($m[0].Line.Trim())" } }
+          foreach ($h in @("mfreadwrite.h","mfidl.h")) { $f = Join-Path $um $h; $m = Select-String -Path $f -Pattern "Shutdown" -SimpleMatch; if ($m) { Write-Output ("  {0} :: Shutdown L{1} :: {2}" -f $h, $m[0].LineNumber, $m[0].Line.Trim()) } }
           Write-Output "##### IMFDXGIBuffer::GetResource #####"
           Block "mfobjects.h" "GetResource" 4 2
           Write-Output "##### IMFDXGIDeviceManager::GetDevice #####"
