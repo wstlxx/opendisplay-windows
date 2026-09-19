@@ -7,37 +7,22 @@ jobs:
       - shell: pwsh
         run: |
           $um = "C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\um"
-          $hs = @("mfapi.h","mfobjects.h","mfidl.h","mfreadwrite.h","mferror.h")
-          function DumpDef([string]$rx, [int]$a) {
-              foreach ($h in $hs) {
-                  $f = Join-Path $um $h
-                  if (-not (Test-Path $f)) { continue }
-                  $lines = Get-Content $f
-                  for ($i=0; $i -lt $lines.Count; $i++) {
-                      if ($lines[$i] -match $rx) {
-                          Write-Output ("  === DEF $h @ L$($i+1) ===")
-                          $e = [Math]::Min($lines.Count-1, $i+$a)
-                          for ($j=$i; $j -le $e; $j++) { Write-Output ("    L{0}: {1}" -f ($j+1), $lines[$j]) }
-                          return
-                      }
-                  }
-              }
-              Write-Output "  (definition of '$rx' not found in any MF header)"
+          function Show([string]$h, [int]$s, [int]$e) {
+              $f = Join-Path $um $h
+              if (-not (Test-Path $f)) { return }
+              $lines = Get-Content $f
+              $s = [Math]::Max(1,$s); $e = [Math]::Min($lines.Count,$e)
+              for ($i=$s; $i -le $e; $i++) { Write-Output ("L{0}: {1}" -f $i, $lines[$i-1]) }
           }
-          Write-Output "### where is IMFByteStream? (all refs) ###"
-          foreach ($h in $hs) {
+          Write-Output "### IMFByteStream C++ body (mfobjects.h) ###"
+          Show "mfobjects.h" 4884 4956
+          Write-Output "### MF_SEEK* occurrences ###"
+          foreach ($h in @("mfapi.h","mfobjects.h","mfidl.h")) {
               $f = Join-Path $um $h
               if (-not (Test-Path $f)) { continue }
               $lines = Get-Content $f
-              for ($i=0; $i -lt $lines.Count; $i++) {
-                  if ($lines[$i] -match "IMFByteStream") { Write-Output ("  {0} L{1}: {2}" -f $h, ($i+1), $lines[$i].Trim()) }
-              }
+              for ($i=0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match "MF_SEEK") { Write-Output ("  {0} L{1}: {2}" -f $h, ($i+1), $lines[$i].Trim()) } }
           }
-          Write-Output "### IMFByteStream definition (+20) ###"
-          DumpDef "IMFByteStream\s*:" 20
-          Write-Output "### MF_SEEK_ORIGIN enum (+6) ###"
-          DumpDef "MF_SEEK_ORIGIN" 6
-          Write-Output "### MFStreamStatus enum (+8) ###"
-          DumpDef "MFStreamStatus" 8
-          Write-Output "### IMFDXGIDeviceManager definition (+16) ###"
-          DumpDef "IMFDXGIDeviceManager\s*:" 16
+          Write-Output "### IMFDXGIDeviceManager C++ body ###"
+          $lines = Get-Content (Join-Path $um "mfapi.h")
+          for ($i=0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match "IMFDXGIDeviceManager\s*:") { for ($j=$i; $j -le ($i+18) -and $j -lt $lines.Count; $j++) { Write-Output ("L{0}: {1}" -f ($j+1), $lines[$j]) }; break } }
