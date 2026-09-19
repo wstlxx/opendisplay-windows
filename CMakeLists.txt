@@ -20,6 +20,13 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Static CRT for every target: keeps the final exe self-contained (no VC
+# redist needed) and avoids /MT-vs-/MD mismatches between our static libs and
+# the exe that would leave CRT symbols (__imp_fopen, ...) unresolved.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # ---------------------------------------------------------------------------
 # Protocol module: pure C++, no platform dependencies.
 # ---------------------------------------------------------------------------
@@ -79,8 +86,5 @@ if(WIN32)
     )
     if(MSVC)
         target_compile_options(opendisplay_receiver PRIVATE /W4 /permissive-)
-        # Static CRT so the exe runs on machines without the VC redist.
-        set_property(TARGET opendisplay_receiver PROPERTY
-            MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     endif()
 endif()
