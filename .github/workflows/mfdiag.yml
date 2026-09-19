@@ -1,0 +1,48 @@
+name: mfdiag
+on: push
+jobs:
+  diag:
+    runs-on: windows-2022
+    steps:
+      - shell: pwsh
+        run: |
+          $um = "C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\um"
+          function Block([string]$h, [string]$pat, [int]$b, [int]$a) {
+              $f = Join-Path $um $h
+              if (-not (Test-Path $f)) { return }
+              $m = Select-String -Path $f -Pattern $pat
+              if (-not $m) { Write-Output "  ($pat NOT in $h)"; return }
+              $ln = $m[0].LineNumber
+              $lines = Get-Content $f
+              $start = [Math]::Max(0, $ln-1-$b)
+              $end = [Math]::Min($lines.Count-1, $ln-1+$a)
+              Write-Output ("  === $h :: '$pat' @ L$ln ===")
+              for ($i=$start; $i -le $end; $i++) { Write-Output ("    L{0}: {1}" -f ($i+1), $lines[$i]) }
+          }
+          Write-Output "##### IMFByteStream methods (via GetStreamStatus) #####"
+          Block "mfidl.h" "GetStreamStatus" 14 3
+          Block "mfapi.h" "GetStreamStatus" 14 3
+          Write-Output "##### MF_SEEK_ORIGIN / MFStreamStatus enums #####"
+          foreach ($s in @("MF_SEEK_ORIGIN","MFStreamStatus","MF_STREAM_STATUS_ENDED")) {
+              foreach ($h in @("mfapi.h","mfobjects.h","mfidl.h")) {
+                  $f = Join-Path $um $h
+                  if (Test-Path $f) { $m = Select-String -Path $f -Pattern $s -SimpleMatch; if ($m) { Write-Output "  $s in $h @ L$($m[0].LineNumber)"; break } }
+              }
+          }
+          Write-Output "##### IMFSourceReader interface (via ReadSample) #####"
+          Block "mfreadwrite.h" "ReadSample" 2 26
+          Write-Output "##### does IMFSourceReader have Shutdown? #####"
+          foreach ($h in @("mfreadwrite.h","mfidl.h")) { $f = Join-Path $um $h; $m = Select-String -Path $f -Pattern "Shutdown" -SimpleMatch; if ($m) { Write-Output "  $h: Shutdown at L$($m[0].LineNumber): $($m[0].Line.Trim())" } }
+          Write-Output "##### IMFDXGIBuffer::GetResource #####"
+          Block "mfobjects.h" "GetResource" 4 2
+          Write-Output "##### IMFDXGIDeviceManager::GetDevice #####"
+          Block "mfapi.h" "GetDevice" 6 2
+          Write-Output "##### constants: which header? #####"
+          foreach ($s in @("MF_MT_DEFAULT_CROP","MF_ATTRIBUTE_VALUE_TYPE_INT32","MF_LOW_LATENCY","MF_SOURCE_READERF_STREAMTICK","MF_SOURCE_READER_FIRST_VIDEO_STREAM","GUID_EMPTY")) {
+              $found = $false
+              foreach ($h in @("mfapi.h","mfobjects.h","mfidl.h","mferror.h","guiddef.h","winnt.h")) {
+                  $f = Join-Path $um $h
+                  if (Test-Path $f) { $m = Select-String -Path $f -Pattern $s -SimpleMatch; if ($m) { Write-Output "  $s -> $h L$($m[0].LineNumber)"; $found = $true; break } }
+              }
+              if (-not $found) { Write-Output "  $s -> NOT FOUND" }
+          }
