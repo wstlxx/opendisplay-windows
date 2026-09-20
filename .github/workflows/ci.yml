@@ -55,8 +55,15 @@ jobs:
       - name: Run protocol unit tests on Windows
         run: build\Release\od_tests.exe
 
-      - name: Upload the receiver exe
+      - name: Stage artifact (exe + test sender + sample stream)
+        run: |
+          New-Item -ItemType Directory -Force build/dist | Out-Null
+          Copy-Item build/Release/opendisplay_receiver.exe build/dist/
+          Copy-Item tools/sim_sender.py build/dist/
+          Copy-Item tests/data/sample.h264 build/dist/sample.h264
+
+      - name: Upload the receiver + test tools
         uses: actions/upload-artifact@v4
         with:
           name: opendisplay_receiver
-          path: build/Release/opendisplay_receiver.exe
+          path: build/dist
