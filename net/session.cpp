@@ -15,9 +15,13 @@ int64_t SteadyNowMs() {
 } // namespace
 
 Session::Session(SOCKET sock, std::string peer, Callbacks cb)
-    : sock_(sock), peer_(std::move(peer)), cb_(std::move(cb)) {}
+    : sock_(sock), peer_(std::move(peer)), cb_(std::move(cb)) {
+    LOG_DEBUG("session(%s) created", peer_.c_str());
+}
 
 Session::~Session() {
+    LOG_DEBUG("session(%s) destroyed (on thread %p)", peer_.c_str(),
+              (void*)std::this_thread::get_id());
     Close();
     if (readThread_.joinable()) readThread_.join();
     if (sock_ != INVALID_SOCKET) {
@@ -35,6 +39,8 @@ void Session::Start() {
 void Session::Close() {
     bool expected = false;
     if (!closed_.compare_exchange_strong(expected, true)) return;
+    LOG_DEBUG("session(%s) Close() (read thread: %d)", peer_.c_str(),
+              (int)(readThread_.get_id() == std::this_thread::get_id()));
     if (sock_ != INVALID_SOCKET) {
         ::shutdown(sock_, SD_BOTH);
         // Do not closesocket here: the read thread may still be inside
@@ -81,6 +87,7 @@ int64_t Session::NowMs() { return SteadyNowMs(); }
 
 void Session::ReadLoop() {
     bool cleanClose = true;
+    const char* reason = "peer closed";
     {
         std::vector<uint8_t> buf(64 * 1024);
         while (!closed_) {
@@ -92,6 +99,9 @@ void Session::ReadLoop() {
             const int rc = ::WSAPoll(&pfd, 1, 250);
             if (rc == SOCKET_ERROR) {
                 cleanClose = false;
+                reason = "WSAPoll SOCKET_ERROR";
+                LOG_WARN("session(%s): WSAPoll error %d", peer_.c_str(),
+                         WSAGetLastError());
                 break;
             }
 
@@ -101,6 +111,7 @@ void Session::ReadLoop() {
                          "connection (sender assumed dead)",
                          peer_.c_str(), now - lastDataMs_);
                 cleanClose = false;
+                reason = "liveness timeout";
                 break;
             }
             if (now - lastPingMs_ >= kPingIntervalMs) {
@@ -109,8 +120,16 @@ void Session::ReadLoop() {
             }
 
             if (rc == 0) continue; // timeout, nothing readable
-            if (pfd.revents & (POLLERR | POLLNVAL)) break;
-            if ((pfd.revents & POLLHUP) && !(pfd.revents & POLLIN)) break;
+            if (pfd.revents & (POLLERR | POLLNVAL)) {
+                reason = "POLLERR/POLLNVAL";
+                LOG_WARN("session(%s): WSAPoll revents=0x%X", peer_.c_str(),
+                         (unsigned)pfd.revents);
+                break;
+            }
+            if ((pfd.revents & POLLHUP) && !(pfd.revents & POLLIN)) {
+                reason = "POLLHUP";
+                break;
+            }
 
             const int n =
                 ::recv(sock_, reinterpret_cast<char*>(buf.data()),
@@ -124,6 +143,7 @@ void Session::ReadLoop() {
                     LOG_WARN("session(%s): corrupt frame length on wire, "
                              "closing", peer_.c_str());
                     cleanClose = false;
+                    reason = "corrupt frame";
                     break;
                 }
                 for (const auto& frame : frames) {
@@ -170,19 +190,22 @@ void Session::ReadLoop() {
                     if (cb_.onVideo) cb_.onVideo(std::move(sample));
                 }
             } else if (n == 0) {
-                break; // peer closed
+                reason = "peer closed (EOF)";
+                break;
             } else {
                 const int err = WSAGetLastError();
                 if (err == WSAEWOULDBLOCK) continue;
                 cleanClose = false;
+                reason = "recv failed";
                 LOG_WARN("session(%s): recv() failed: %d", peer_.c_str(), err);
                 break;
             }
         }
     }
     if (cb_.onClosed) cb_.onClosed(cleanClose);
-    LOG_INFO("session(%s): read loop ended (%s)", peer_.c_str(),
-             cleanClose ? "peer closed" : "error/timeout");
+    LOG_INFO("session(%s): read loop ended (%s) [%s] frames=%llu",
+             peer_.c_str(), cleanClose ? "clean" : "error", reason,
+             (unsigned long long)framesReceived_);
 }
 
 } // namespace od::net

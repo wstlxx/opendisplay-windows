@@ -102,6 +102,10 @@ struct App {
     net::TcpListener listener;
     std::shared_ptr<net::Session> session;  // guarded by sessionMutex
     std::mutex sessionMutex;
+    // The session whose read loop just ended. onClosed (running on the read
+    // thread) records it here; the main loop reaps it so that ~Session (which
+    // joins the read thread) never runs on the read thread itself.
+    net::Session* endedSession = nullptr;   // guarded by sessionMutex
     std::string helloId = MakeHelloId();
 
     // hello resend after user resize (debounced, PROTOCOL.md 6.1)
@@ -124,6 +128,7 @@ struct App {
     void TearDown();
 
     void OnAccept(SOCKET sock, const std::string& peer);
+    void ReapEndedSession();
     void HandleControl(net::Session* s, const ControlMessage& msg);
     void SendStats(net::Session* s);
     void MaybeSendHello();
@@ -362,9 +367,12 @@ void App::OnAccept(SOCKET sock, const std::string& peer) {
     cbs.onClosed = [this, self, peer](bool clean) {
         LOG_INFO("session %s closed (%s)", peer.c_str(),
                  clean ? "peer closed" : "error");
+        // Do NOT reset the session here: onClosed runs on the read thread, and
+        // ~Session joins the read thread (itself) -> deadlock/UB. Record the
+        // ended session and let the main loop destroy it.
         std::lock_guard lock(sessionMutex);
         if (auto sp = self->lock()) {
-            if (session == sp) session.reset();
+            if (session == sp) endedSession = sp.get();
         }
     };
     auto s = std::make_shared<net::Session>(sock, peer, std::move(cbs));
@@ -379,6 +387,18 @@ void App::OnAccept(SOCKET sock, const std::string& peer) {
     GetClientRect(hwnd, &cr);
     s->SendHello(cr.right - cr.left, cr.bottom - cr.top, uiScale, helloId);
     lastStatsAtMs = SteadyNowMs();
+}
+
+void App::ReapEndedSession() {
+    std::shared_ptr<net::Session> toDestroy;
+    {
+        std::lock_guard lock(sessionMutex);
+        if (endedSession && session && session.get() == endedSession) {
+            toDestroy = std::move(session);
+            endedSession = nullptr;
+        }
+    }
+    if (toDestroy) toDestroy.reset();  // ~Session joins read thread (main thread)
 }
 
 void App::HandleControl(net::Session* s, const ControlMessage& msg) {
@@ -496,6 +516,7 @@ void App::Run() {
             DispatchMessage(&msg);
         }
         if (!running) break;
+        ReapEndedSession();
         MaybeSendHello();
         std::shared_ptr<video::DecodedFrame> latest;
         {
