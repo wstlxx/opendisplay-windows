@@ -120,6 +120,7 @@ private:
     std::vector<uint8_t> lastSps_;
     std::vector<uint8_t> lastPps_;
     int64_t lastKfRequestMs = 0;
+    bool memProbed_ = false;  // run the in-memory keyframe probe once
 #endif
 
     // Diagnostic counters are touched from more than one thread (Submit on the

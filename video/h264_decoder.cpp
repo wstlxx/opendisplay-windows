@@ -195,6 +195,35 @@ void H264Decoder::RequestKeyframe() {
 bool H264Decoder::CreatePipeline(const net::VideoSample* firstKeyframe) {
     const bool haveData = firstKeyframe && !firstKeyframe->annexb.empty();
 
+    if (haveData && !memProbed_) {
+        memProbed_ = true;
+        // Diagnostic: can MF build a source reader from an IN-MEMORY copy of
+        // this keyframe? Same bytes, but a standard (seekable) stream instead
+        // of our custom live byte stream -> cleanly separates "H.264
+        // source/codec missing" from "our live byte stream is the bug".
+        Microsoft::WRL::ComPtr<IMFByteStream> mem;
+        if (SUCCEEDED(MFCreateMemoryStream(
+                firstKeyframe->annexb.data(),
+                (DWORD)firstKeyframe->annexb.size(),
+                mem.ReleaseAndGetAddressOf()))) {
+            Microsoft::WRL::ComPtr<IMFAttributes> memAttrs;
+            if (SUCCEEDED(MFCreateAttributes(memAttrs.ReleaseAndGetAddressOf(), 1))) {
+                Microsoft::WRL::ComPtr<IMFSourceReader> memReader;
+                const HRESULT mhr = MFCreateSourceReaderFromByteStream(
+                    mem.Get(), memAttrs.Get(),
+                    memReader.ReleaseAndGetAddressOf());
+                LOG_INFO("decoder: in-memory keyframe probe: %s (0x%lX)",
+                         SUCCEEDED(mhr)
+                             ? "OK -> codec present, live byte stream is the bug"
+                             : "FAILED -> H.264 source/codec missing (or raw "
+                               "Annex-B unsupported by the source reader)",
+                         static_cast<unsigned long>(mhr));
+            }
+        } else {
+            LOG_WARN("decoder: MFCreateMemoryStream failed (diagnostic skipped)");
+        }
+    }
+
     // Two attempts: (0) hardware decode (D3D manager -> texture output),
     // (1) software decode (system memory). Each uses a FRESH byte stream
     // (the first attempt's stream may have been consumed during probing).
