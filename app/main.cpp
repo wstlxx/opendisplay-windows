@@ -243,28 +243,38 @@ bool App::Setup(int port) {
     wc.hInstance = GetModuleHandle(nullptr);
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.lpszClassName = L"OpenDisplayReceiver";
-    RegisterClassEx(&wc);
+    const ATOM atom = RegisterClassEx(&wc);
+    if (!atom) {
+        LOG_ERROR("RegisterClassEx failed: %lu", GetLastError());
+        return false;
+    }
+    LOG_INFO("window class registered (atom=%lu)", (unsigned long)atom);
 
     const int initW = 1280, initH = 720;
     RECT rc{0, 0, initW, initH};
     AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
 
-    // Center on the primary monitor's work area.
+    // Center on the primary monitor's work area (fall back to 0,0 if the
+    // monitor query fails, e.g. no interactive desktop).
+    int x = 0, y = 0;
     HMONITOR mon = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi{};
     mi.cbSize = sizeof(mi);
-    GetMonitorInfo(mon, &mi);
-    const int x = mi.rcWork.left + (mi.rcWork.right - mi.rcWork.left -
-                                    (rc.right - rc.left)) / 2;
-    const int y = mi.rcWork.top + (mi.rcWork.bottom - mi.rcWork.top -
-                                   (rc.bottom - rc.top)) / 2;
+    if (GetMonitorInfo(mon, &mi)) {
+        x = mi.rcWork.left + (mi.rcWork.right - mi.rcWork.left -
+                              (rc.right - rc.left)) / 2;
+        y = mi.rcWork.top + (mi.rcWork.bottom - mi.rcWork.top -
+                             (rc.bottom - rc.top)) / 2;
+    }
+
+    const int ww = rc.right - rc.left, wh = rc.bottom - rc.top;
+    LOG_INFO("creating window at (%d,%d) size %dx%d", x, y, ww, wh);
 
     hwnd = CreateWindowEx(0, L"OpenDisplayReceiver", L"OpenDisplay",
-                          WS_OVERLAPPEDWINDOW, x, y, rc.right - rc.left,
-                          rc.bottom - rc.top, nullptr, nullptr,
+                          WS_OVERLAPPEDWINDOW, x, y, ww, wh, nullptr, nullptr,
                           GetModuleHandle(nullptr), this);
     if (!hwnd) {
-        LOG_ERROR("CreateWindow failed: %lu", GetLastError());
+        LOG_ERROR("CreateWindowEx failed: %lu", GetLastError());
         return false;
     }
     uiScale = static_cast<double>(GetDpiForWindow(hwnd)) / 96.0;
