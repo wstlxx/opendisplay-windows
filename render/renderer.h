@@ -10,7 +10,8 @@
 
 #ifdef _WIN32
 #include <wrl/client.h>
-// d3d11.h / dxgi1_2.h come in via h264_decoder.h
+#include <d3d11.h>
+#include <dxgi1_2.h>
 #endif
 
 namespace od::render {

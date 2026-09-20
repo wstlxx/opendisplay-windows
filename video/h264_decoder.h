@@ -50,6 +50,7 @@
 #endif
 
 #include <d3d11.h>
+#include <dxgi1_2.h>
 #include <wrl/client.h>
 
 // Reduced-SDK fallback: provide the MFT pieces we use, but only if no header
