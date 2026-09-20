@@ -20,8 +20,9 @@ Session::Session(SOCKET sock, std::string peer, Callbacks cb)
 }
 
 Session::~Session() {
-    LOG_DEBUG("session(%s) destroyed (on thread %p)", peer_.c_str(),
-              (void*)std::this_thread::get_id());
+    LOG_DEBUG("session(%s) destroyed (thread hash %llu)", peer_.c_str(),
+              (unsigned long long)std::hash<std::thread::id>{}(
+                  std::this_thread::get_id()));
     Close();
     if (readThread_.joinable()) readThread_.join();
     if (sock_ != INVALID_SOCKET) {
