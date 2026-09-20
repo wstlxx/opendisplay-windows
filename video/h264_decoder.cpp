@@ -209,7 +209,7 @@ bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb) {
             Microsoft::WRL::ComPtr<IMFMediaType> type;
             if (SUCCEEDED(decoder_->GetOutputCurrentType(
                     0, type.ReleaseAndGetAddressOf()))) {
-                DWORD ss = 0;
+                UINT32 ss = 0;
                 if (SUCCEEDED(type->GetUINT32(MF_MT_SAMPLE_SIZE, &ss)))
                     sampleSize_ = ss;
                 UINT32 w = 0, h = 0;
