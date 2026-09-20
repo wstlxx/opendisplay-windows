@@ -202,14 +202,15 @@ bool App::Setup(int port) {
     LOG_INFO("opendisplay receiver starting (hello id %s)", helloId.c_str());
 
     // --- D3D11 device (shared with MF via the DXGI device manager) ---
-    // Use the default-argument form of D3D11CreateDevice (no explicit feature
-    // level list / flags): passing {11_1,11_0}+BGRA returned E_INVALIDARG
-    // (0x80070057) even for WARP on some driver setups. Fallback chain is
-    // hardware -> WARP (software, no GPU needed) -> default driver stack.
+    // NOTE: the 7th parameter is D3D11_SDK_VERSION (==7), NOT a flags value.
+    // An earlier version passed D3D11_CREATE_DEVICE_BGRA_SUPPORT (16) there,
+    // which made the call malformed and D3D11CreateDevice returned E_INVALIDARG
+    // (0x80070057) for both hardware and WARP. Flags (4th) is 0 and the feature
+    // level list uses the default (nullptr, 0). Fallback: hardware -> WARP.
     D3D_FEATURE_LEVEL obtained{};
     HRESULT hr = D3D11CreateDevice(
         nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0,
-        D3D11_DEFAULT, device.ReleaseAndGetAddressOf(), &obtained,
+        D3D11_SDK_VERSION, device.ReleaseAndGetAddressOf(), &obtained,
         deviceCtx.ReleaseAndGetAddressOf());
     if (FAILED(hr)) {
         LOG_WARN("hardware D3D11 device failed (0x%lX), trying WARP", hr);
@@ -217,20 +218,11 @@ bool App::Setup(int port) {
         deviceCtx.Reset();
         hr = D3D11CreateDevice(
             nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
-            D3D11_DEFAULT, device.ReleaseAndGetAddressOf(), &obtained,
+            D3D11_SDK_VERSION, device.ReleaseAndGetAddressOf(), &obtained,
             deviceCtx.ReleaseAndGetAddressOf());
     }
     if (FAILED(hr)) {
-        LOG_WARN("WARP D3D11 device failed (0x%lX), trying default driver", hr);
-        device.Reset();
-        deviceCtx.Reset();
-        hr = D3D11CreateDevice(
-            nullptr, D3D_DRIVER_TYPE_DEFAULT, nullptr, 0, nullptr, 0,
-            D3D11_DEFAULT, device.ReleaseAndGetAddressOf(), &obtained,
-            deviceCtx.ReleaseAndGetAddressOf());
-    }
-    if (FAILED(hr)) {
-        LOG_ERROR("D3D11CreateDevice failed (hw+warp+default): 0x%lX", hr);
+        LOG_ERROR("D3D11CreateDevice failed (hw+warp): 0x%lX", hr);
         return false;
     }
     LOG_INFO("D3D11 device up (feature level 0x%04X)", obtained);
