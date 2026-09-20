@@ -50,16 +50,19 @@ struct VSIn {
 };
 Texture2D Video : register(t0);
 SamplerState Smp : register(s0);
-float4 PSMain(VSIn in) : SV_Target {
-    return Video.Sample(Smp, in.uv);
+float4 PSMain(VSIn v) : SV_Target {
+    return Video.Sample(Smp, v.uv);
 }
 )hlsl";
 
+// Must match the HLSL cbuffer layout exactly: 3 x 16-byte registers = 48 bytes
+// (float2 WindowSize + float2 _pad fill the third register). sizeof() must be a
+// multiple of 16 for a D3D11 constant buffer.
 struct PerFrame {
     float WinRect[4];
     float TexRect[4];
     float WindowSize[2];
-    float pad;
+    float _pad[2];
 };
 
 } // namespace
@@ -83,7 +86,7 @@ bool Renderer::Init(HWND hwnd, Microsoft::WRL::ComPtr<ID3D11Device> device,
 
     // Constant buffer (PerFrame).
     D3D11_BUFFER_DESC bd{};
-    bd.ByteWidth = sizeof(PerFrame);
+    bd.ByteWidth = static_cast<UINT>((sizeof(PerFrame) + 15) & ~15u); // 16-byte multiple
     bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     bd.Usage = D3D11_USAGE_DEFAULT;
     if (FAILED(device_->CreateBuffer(&bd, nullptr, constants_.ReleaseAndGetAddressOf()))) {
