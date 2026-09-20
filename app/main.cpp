@@ -210,7 +210,17 @@ bool App::Setup(int port) {
         device.ReleaseAndGetAddressOf(), &obtained,
         deviceCtx.ReleaseAndGetAddressOf());
     if (FAILED(hr)) {
-        LOG_ERROR("D3D11CreateDevice failed: 0x%lX", hr);
+        // VMs / RDP / headless machines may have no usable hardware device;
+        // fall back to WARP (software rasterizer) so the app still runs.
+        LOG_WARN("hardware D3D11 device failed (0x%lX), trying WARP", hr);
+        hr = D3D11CreateDevice(
+            nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, levels,
+            ARRAYSIZE(levels), D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            device.ReleaseAndGetAddressOf(), &obtained,
+            deviceCtx.ReleaseAndGetAddressOf());
+    }
+    if (FAILED(hr)) {
+        LOG_ERROR("D3D11CreateDevice failed (hardware + WARP): 0x%lX", hr);
         return false;
     }
     LOG_INFO("D3D11 device up (feature level 0x%04X)", obtained);
@@ -514,6 +524,34 @@ void App::TearDown() {
 
 // ---------------------------------------------------------------------------
 
+// Logs an unhandled SEH (access violation, ...) so a crash is not silently
+// swallowed when the exe is double-clicked and its console closes on exit.
+LONG WINAPI UnhandledCrashHandler(EXCEPTION_POINTERS* ep) {
+    if (ep && ep->ExceptionRecord) {
+        char msg[192];
+        std::snprintf(msg, sizeof(msg),
+                      "UNHANDLED EXCEPTION 0x%08lX at %p",
+                      ep->ExceptionRecord->ExceptionCode,
+                      ep->ExceptionRecord->ExceptionAddress);
+        LOG_ERROR("%s", msg);
+        std::fprintf(stderr, "\n%s\n", msg);
+        std::fflush(stderr);
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// Directory containing the running exe ("" if it can't be determined).
+std::string ExeDir() {
+    char path[MAX_PATH];
+    DWORD n = GetModuleFileNameA(nullptr, path, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    std::string s(path, n);
+    const auto pos = s.find_last_of("\\/");
+    return pos == std::string::npos ? std::string() : s.substr(0, pos);
+}
+
+// ---------------------------------------------------------------------------
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -530,8 +568,14 @@ int main(int argc, char** argv) {
         }
     }
 
-    log::Init(logFile);
-    LOG_INFO("opendisplay_windows receiver starting");
+    // Log to a file by default (next to the exe) so a failure is visible even
+    // when the exe is double-clicked and there is no console to read from.
+    const std::string logPath =
+        logFile ? std::string(logFile) : ExeDir() + "opendisplay_receiver.log";
+    log::Init(logPath.c_str());
+    LOG_INFO("opendisplay_windows receiver starting (log: %s)", logPath.c_str());
+
+    SetUnhandledExceptionFilter(UnhandledCrashHandler);
 
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -555,7 +599,14 @@ int main(int argc, char** argv) {
 
     MFShutdown();
     WSACleanup();
-    LOG_INFO("opendisplay_windows receiver exiting");
+    LOG_INFO("opendisplay_windows receiver exiting (rc=%d)", rc);
     log::Shutdown();
+    if (rc != 0) {
+        // Keep a double-clicked console open so the last log line is readable.
+        std::fprintf(stderr, "\n*** receiver exited with code %d (log: %s) ***\n",
+                     rc, logPath.c_str());
+        std::fflush(stderr);
+        std::system("pause");
+    }
     return rc;
 }
