@@ -34,6 +34,11 @@ Session::~Session() {
 void Session::Start() {
     lastDataMs_ = SteadyNowMs();
     lastPingMs_ = lastDataMs_;
+    // recv() timeout: lets the read loop wake periodically for liveness +
+    // pings without a separate select/WSAPoll (WSAPoll returned WSAEINVAL here).
+    DWORD rto = 250;
+    setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&rto), sizeof(rto));
     readThread_ = std::thread([this] { ReadLoop(); });
 }
 
@@ -91,20 +96,16 @@ void Session::ReadLoop() {
     const char* reason = "peer closed";
     {
         std::vector<uint8_t> buf(64 * 1024);
-        while (!closed_) {
-            // Poll with a short timeout so liveness + pings keep working
-            // even when the sender is quiet.
-            WSAPOLLFD pfd{};
-            pfd.fd = sock_;
-            pfd.events = POLLIN | POLLHUP;
-            const int rc = ::WSAPoll(&pfd, 1, 250);
-            if (rc == SOCKET_ERROR) {
-                cleanClose = false;
-                reason = "WSAPoll SOCKET_ERROR";
-                LOG_WARN("session(%s): WSAPoll error %d", peer_.c_str(),
-                         WSAGetLastError());
-                break;
-            }
+        for (;;) {
+            if (closed_) { reason = "closed"; break; }
+
+            // Blocking recv; SO_RCVTIMEO (250 ms, set in Start) makes it wake
+            // periodically so liveness + pings keep working while the sender is
+            // quiet. (WSAPoll returned WSAEINVAL 10022 on this path, so recv
+            // with a timeout is used instead.)
+            const int n =
+                ::recv(sock_, reinterpret_cast<char*>(buf.data()),
+                       static_cast<int>(buf.size()), 0);
 
             const int64_t now = SteadyNowMs();
             if (now - lastDataMs_ > kLivenessTimeoutMs) {
@@ -119,22 +120,6 @@ void Session::ReadLoop() {
                 lastPingMs_ = now;
                 SendPing();
             }
-
-            if (rc == 0) continue; // timeout, nothing readable
-            if (pfd.revents & (POLLERR | POLLNVAL)) {
-                reason = "POLLERR/POLLNVAL";
-                LOG_WARN("session(%s): WSAPoll revents=0x%X", peer_.c_str(),
-                         (unsigned)pfd.revents);
-                break;
-            }
-            if ((pfd.revents & POLLHUP) && !(pfd.revents & POLLIN)) {
-                reason = "POLLHUP";
-                break;
-            }
-
-            const int n =
-                ::recv(sock_, reinterpret_cast<char*>(buf.data()),
-                       static_cast<int>(buf.size()), 0);
             if (n > 0) {
                 lastDataMs_ = SteadyNowMs();
                 bool valid = true;
@@ -195,7 +180,7 @@ void Session::ReadLoop() {
                 break;
             } else {
                 const int err = WSAGetLastError();
-                if (err == WSAEWOULDBLOCK) continue;
+                if (err == WSAETIMEDOUT || err == WSAEWOULDBLOCK) continue;
                 cleanClose = false;
                 reason = "recv failed";
                 LOG_WARN("session(%s): recv() failed: %d", peer_.c_str(), err);
