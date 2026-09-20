@@ -129,9 +129,10 @@ struct App {
     void MaybeSendHello();
     void ToggleFullscreen();
 
-    // WndProc trampoline
-    LRESULT WndProcThunk(UINT msg, WPARAM wp, LPARAM lp);
-    LRESULT WndProcHandle(UINT msg, WPARAM wp, LPARAM lp);
+    // WndProc trampoline (whnd is the window being messaged; it is valid even
+    // during CreateWindowEx, when the App::hwnd member is still null)
+    LRESULT WndProcThunk(HWND whnd, UINT msg, WPARAM wp, LPARAM lp);
+    LRESULT WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp);
 
     static LRESULT CALLBACK WndProcStatic(HWND h, UINT msg, WPARAM wp,
                                           LPARAM lp);
@@ -146,15 +147,15 @@ LRESULT CALLBACK App::WndProcStatic(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                          reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
     }
     App* app = reinterpret_cast<App*>(GetWindowLongPtr(h, GWLP_USERDATA));
-    if (app) return app->WndProcThunk(msg, wp, lp);
+    if (app) return app->WndProcThunk(h, msg, wp, lp);
     return DefWindowProc(h, msg, wp, lp);
 }
 
-LRESULT App::WndProcThunk(UINT msg, WPARAM wp, LPARAM lp) {
-    return WndProcHandle(msg, wp, lp);
+LRESULT App::WndProcThunk(HWND whnd, UINT msg, WPARAM wp, LPARAM lp) {
+    return WndProcHandle(whnd, msg, wp, lp);
 }
 
-LRESULT App::WndProcHandle(UINT msg, WPARAM wp, LPARAM lp) {
+LRESULT App::WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_SIZE:
             if (wp != SIZE_MINIMIZED) {
@@ -179,12 +180,12 @@ LRESULT App::WndProcHandle(UINT msg, WPARAM wp, LPARAM lp) {
                 if (session) session->SendClosing();
                 running = false;
             }
-            DestroyWindow(hwnd);
+            DestroyWindow(whnd);
             return 0;
         case WM_GETMINMAXINFO: {
             // Never let the window exceed the work area.
             auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
-            HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            HMONITOR mon = MonitorFromWindow(whnd, MONITOR_DEFAULTTONEAREST);
             MONITORINFO mi{};
             mi.cbSize = sizeof(mi);
             if (GetMonitorInfo(mon, &mi)) {
@@ -195,7 +196,7 @@ LRESULT App::WndProcHandle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
     }
-    return DefWindowProc(hwnd, msg, wp, lp);
+    return DefWindowProc(whnd, msg, wp, lp);
 }
 
 bool App::Setup(int port) {
