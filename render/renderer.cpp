@@ -184,6 +184,7 @@ bool Renderer::CreateShaders() {
 
 void Renderer::Resize(int w, int h) {
     if (w <= 0 || h <= 0) return;
+    if (!swap_ || !ctx_ || !rtv_) return; // not (re)initialized yet
     clientW_ = w;
     clientH_ = h;
     ctx_->Flush();
@@ -211,6 +212,7 @@ void Renderer::Resize(int w, int h) {
 }
 
 void Renderer::Present(const video::DecodedFrame* frame) {
+    if (!swap_ || !ctx_ || !rtv_) return; // not (re)initialized yet
     const float clear[4] = {0.06f, 0.06f, 0.08f, 1.0f};
     ctx_->OMSetRenderTargets(1, rtv_.GetAddressOf(), nullptr);
     ctx_->ClearRenderTargetView(rtv_.Get(), clear);
