@@ -151,13 +151,58 @@ private:
 
 // ---------------------------------------------------------------------------
 
+// Enumerate the registered video decoder MFTs and log their friendly names.
+// A missing H.264/AVC decoder (common on some Windows editions, or after a
+// bad driver install) is the usual cause of MF_E_UNSUPPORTED_MEDIA_TYPE from
+// MFCreateSourceReaderFromByteStream, so this tells us from the log alone
+// whether an H.264 decoder is actually present.
+static void LogAvailableVideoDecoders() {
+    IMFTEnum* enumerator = nullptr;
+    if (FAILED(MFEnumMFTs(MFT_CATEGORY_VIDEO_DECODER,
+                          MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_ASYNCMFT,
+                          &enumerator))) {
+        LOG_WARN("decoder: MFEnumMFTs(video decoder) failed");
+        return;
+    }
+    DWORD count = 0;
+    if (FAILED(enumerator->GetMFTs(0, nullptr, 0, &count))) {
+        LOG_WARN("decoder: GetMFTs(count) failed");
+        enumerator->Release();
+        return;
+    }
+    LOG_INFO("decoder: %u video decoder MFTs registered:", (unsigned)count);
+    if (count > 0) {
+        std::vector<IMFTransform*> mfts(count, nullptr);
+        DWORD actual = 0;
+        if (SUCCEEDED(enumerator->GetMFTs(0, mfts.data(), count, &actual))) {
+            for (DWORD i = 0; i < actual; ++i) {
+                MFT_DESCRIPTOR d{};
+                if (SUCCEEDED(mfts[i]->GetMFTDescriptor(&d)) &&
+                    d.pszFriendlyName) {
+                    char name[256] = "?";
+                    const int n = WideCharToMultiByte(
+                        CP_UTF8, 0, d.pszFriendlyName, -1, name,
+                        static_cast<int>(sizeof(name)) - 1, nullptr, nullptr);
+                    if (n >= 0) name[n] = 0;
+                    LOG_INFO("decoder:   video MFT[%u]: %s", (unsigned)i, name);
+                }
+                mfts[i]->Release();
+            }
+        }
+    }
+    enumerator->Release();
+}
+
 H264Decoder::H264Decoder(Config cfg) : cfg_(std::move(cfg)) {
     stream_ = new ByteStreamSource();
 }
 
 H264Decoder::~H264Decoder() { Shutdown(); }
 
-bool H264Decoder::Init() { return true; }
+bool H264Decoder::Init() {
+    LogAvailableVideoDecoders();
+    return true;
+}
 
 void H264Decoder::Shutdown() {
     std::lock_guard lock(rebuildMutex_);
