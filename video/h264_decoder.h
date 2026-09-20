@@ -63,6 +63,10 @@ public:
     struct Config {
 #ifdef _WIN32
         Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> dxgiManager;
+        // Non-owning: the app owns these; the decoder uses them to upload
+        // software-decoded (system-memory) NV12 frames to a D3D11 texture.
+        Microsoft::WRL::ComPtr<ID3D11Device> device;
+        Microsoft::WRL::ComPtr<ID3D11DeviceContext> deviceCtx;
 #endif
         // Called on the reader thread once per decoded frame.
         std::function<void(std::shared_ptr<DecodedFrame>)> onFrame;
@@ -94,6 +98,8 @@ private:
 #ifdef _WIN32
     void ReaderLoop();
     void PublishSample(IMFSample* sample);
+    bool UploadNV12ToTexture(IMFMediaBuffer* buf,
+                             std::shared_ptr<DecodedFrame> frame);
     bool CreatePipeline(const net::VideoSample* firstKeyframe);
     void StopReader();
     void RequestKeyframe();

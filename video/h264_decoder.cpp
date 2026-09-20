@@ -151,58 +151,13 @@ private:
 
 // ---------------------------------------------------------------------------
 
-// Enumerate the registered video decoder MFTs and log their friendly names.
-// A missing H.264/AVC decoder (common on some Windows editions, or after a
-// bad driver install) is the usual cause of MF_E_UNSUPPORTED_MEDIA_TYPE from
-// MFCreateSourceReaderFromByteStream, so this tells us from the log alone
-// whether an H.264 decoder is actually present.
-static void LogAvailableVideoDecoders() {
-    IMFTEnum* enumerator = nullptr;
-    if (FAILED(MFEnumMFTs(MFT_CATEGORY_VIDEO_DECODER,
-                          MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_ASYNCMFT,
-                          &enumerator))) {
-        LOG_WARN("decoder: MFEnumMFTs(video decoder) failed");
-        return;
-    }
-    DWORD count = 0;
-    if (FAILED(enumerator->GetMFTs(0, nullptr, 0, &count))) {
-        LOG_WARN("decoder: GetMFTs(count) failed");
-        enumerator->Release();
-        return;
-    }
-    LOG_INFO("decoder: %u video decoder MFTs registered:", (unsigned)count);
-    if (count > 0) {
-        std::vector<IMFTransform*> mfts(count, nullptr);
-        DWORD actual = 0;
-        if (SUCCEEDED(enumerator->GetMFTs(0, mfts.data(), count, &actual))) {
-            for (DWORD i = 0; i < actual; ++i) {
-                MFT_DESCRIPTOR d{};
-                if (SUCCEEDED(mfts[i]->GetMFTDescriptor(&d)) &&
-                    d.pszFriendlyName) {
-                    char name[256] = "?";
-                    const int n = WideCharToMultiByte(
-                        CP_UTF8, 0, d.pszFriendlyName, -1, name,
-                        static_cast<int>(sizeof(name)) - 1, nullptr, nullptr);
-                    if (n >= 0) name[n] = 0;
-                    LOG_INFO("decoder:   video MFT[%u]: %s", (unsigned)i, name);
-                }
-                mfts[i]->Release();
-            }
-        }
-    }
-    enumerator->Release();
-}
-
 H264Decoder::H264Decoder(Config cfg) : cfg_(std::move(cfg)) {
     stream_ = new ByteStreamSource();
 }
 
 H264Decoder::~H264Decoder() { Shutdown(); }
 
-bool H264Decoder::Init() {
-    LogAvailableVideoDecoders();
-    return true;
-}
+bool H264Decoder::Init() { return true; }
 
 void H264Decoder::Shutdown() {
     std::lock_guard lock(rebuildMutex_);
@@ -238,59 +193,62 @@ void H264Decoder::RequestKeyframe() {
 }
 
 bool H264Decoder::CreatePipeline(const net::VideoSample* firstKeyframe) {
-    HRESULT hr;
+    const bool haveData = firstKeyframe && !firstKeyframe->annexb.empty();
 
-    // A fresh byte source per pipeline generation. Reusing one across
-    // generations risks the finalizing old parser and the new parser reading
-    // the same stream concurrently.
-    stream_ = new ByteStreamSource();
-    if (firstKeyframe && !firstKeyframe->annexb.empty()) {
-        stream_->Append(firstKeyframe->annexb.data(), firstKeyframe->annexb.size());
-    }
+    // Two attempts: (0) hardware decode (D3D manager -> texture output),
+    // (1) software decode (system memory). Each uses a FRESH byte stream
+    // (the first attempt's stream may have been consumed during probing).
+    // Log each attempt's HRESULT so we can tell, from the log alone, whether
+    // the failure is the D3D path or the codec/byte stream in general.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const bool useD3D = (attempt == 0);
+        if (!useD3D && !cfg_.device) break; // can't upload software frames
 
-    Microsoft::WRL::ComPtr<IMFAttributes> attrs;
-    hr = MFCreateAttributes(attrs.ReleaseAndGetAddressOf(), 4);
-    if (FAILED(hr)) {
-        LOG_ERROR("decoder: MFCreateAttributes failed: 0x%lX", hr);
-        return false;
-    }
+        Microsoft::WRL::ComPtr<ByteStreamSource> fresh = new ByteStreamSource();
+        if (haveData)
+            fresh->Append(firstKeyframe->annexb.data(), firstKeyframe->annexb.size());
 
-    // Low-latency decode; route video to our D3D11 device for hardware
-    // decode (output arrives as DXGI textures).
-    attrs->SetUINT32(MF_LOW_LATENCY, TRUE);
-    if (cfg_.dxgiManager) {
-        attrs->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, cfg_.dxgiManager.Get());
-    }
+        Microsoft::WRL::ComPtr<IMFAttributes> attrs;
+        if (FAILED(MFCreateAttributes(attrs.ReleaseAndGetAddressOf(), 4)))
+            return false;
+        attrs->SetUINT32(MF_LOW_LATENCY, TRUE);
+        if (useD3D && cfg_.dxgiManager)
+            attrs->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, cfg_.dxgiManager.Get());
 
-    // One call builds the media source + source reader over our byte stream.
-    hr = MFCreateSourceReaderFromByteStream(
-        stream_.Get(), attrs.Get(), reader_.ReleaseAndGetAddressOf());
-    if (FAILED(hr)) {
-        LOG_ERROR("decoder: MFCreateSourceReaderFromByteStream failed: 0x%lX",
-                  hr);
-        reader_.Reset();
-        return false;
-    }
-
-    // Ask for NV12 output (what the hardware decoder produces). If the
-    // request is rejected, accept the decoder's native output.
-    Microsoft::WRL::ComPtr<IMFMediaType> nv12;
-    if (SUCCEEDED(MFCreateMediaType(nv12.ReleaseAndGetAddressOf()))) {
-        nv12->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-        nv12->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-        if (FAILED(reader_->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
-                                                nullptr, nv12.Get()))) {
-            LOG_DEBUG("decoder: NV12 output type rejected, using native");
+        Microsoft::WRL::ComPtr<IMFSourceReader> sr;
+        const HRESULT hr = MFCreateSourceReaderFromByteStream(
+            fresh.Get(), attrs.Get(), sr.ReleaseAndGetAddressOf());
+        if (FAILED(hr)) {
+            LOG_WARN("decoder: source reader (%s) failed: 0x%lX",
+                     useD3D ? "D3D/hardware" : "software",
+                     static_cast<unsigned long>(hr));
+            continue;
         }
-    }
-    reader_->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
-                                 currentOutputType_.ReleaseAndGetAddressOf());
+        LOG_INFO("decoder: source reader up (%s path)",
+                 useD3D ? "D3D/hardware" : "software");
 
-    generation_++;
-    running_ = true;
-    readerThread_ = std::thread([this] { ReaderLoop(); });
-    pipelineReady_ = true;
-    return true;
+        // Ask for NV12 output; if rejected, accept the decoder's native output.
+        Microsoft::WRL::ComPtr<IMFMediaType> nv12;
+        if (SUCCEEDED(MFCreateMediaType(nv12.ReleaseAndGetAddressOf()))) {
+            nv12->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+            nv12->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
+            if (FAILED(sr->SetCurrentMediaType(
+                    MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, nv12.Get()))) {
+                LOG_DEBUG("decoder: NV12 output type rejected, using native");
+            }
+        }
+        sr->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+                                currentOutputType_.ReleaseAndGetAddressOf());
+
+        stream_ = fresh;
+        reader_ = sr;
+        generation_++;
+        running_ = true;
+        readerThread_ = std::thread([this] { ReaderLoop(); });
+        pipelineReady_ = true;
+        return true;
+    }
+    return false;
 }
 
 void H264Decoder::Submit(net::VideoSample&& s) {
@@ -435,12 +393,74 @@ void H264Decoder::PublishSample(IMFSample* sample) {
         }
     }
 
-    // (No CPU-upload fallback: the source reader is given our DXGI
-    //  device manager, so output samples arrive as DXGI textures and
-    //  are handled by the ConvertToTexture path above.)
+    // Software-decode path: no DXGI surface, so the buffer holds NV12 in
+    // system memory. Upload it to a D3D11 texture on our device.
+    if (!done && cfg_.device && cfg_.deviceCtx &&
+        frame->width > 0 && frame->height > 0) {
+        GUID subtype = GUID_NULL;
+        if (currentOutputType_)
+            currentOutputType_->GetGUID(MF_MT_SUBTYPE, &subtype);
+        if (subtype == MFVideoFormat_NV12)
+            done = UploadNV12ToTexture(buf, frame);
+        else
+            LOG_WARN("decoder: software output is not NV12 (0x%08lX), skipping",
+                     subtype.Data1);
+    }
 
     buf->Release();
     if (done && cfg_.onFrame) cfg_.onFrame(frame);
+}
+
+bool H264Decoder::UploadNV12ToTexture(IMFMediaBuffer* buf,
+                                      std::shared_ptr<DecodedFrame> frame) {
+    const int w = frame->width, h = frame->height;
+    const size_t ySize = (size_t)w * (size_t)h;
+    const size_t uvSize = (size_t)w * (size_t)(h / 2);
+
+    BYTE* scanline = nullptr;
+    DWORD maxLen = 0, curLen = 0;
+    if (FAILED(buf->Lock(&scanline, &maxLen, &curLen))) return false;
+    const bool bigEnough = curLen >= (DWORD)(ySize + uvSize);
+
+    bool ok = false;
+    if (bigEnough) {
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = (UINT)w;
+        desc.Height = (UINT)h;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_NV12;
+        desc.SampleDesc.Count = 1;
+        desc.SampleDesc.Quality = 0;
+        desc.Usage = D3D11_USAGE_DYNAMIC;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+        ID3D11Texture2D* tex = nullptr;
+        if (SUCCEEDED(cfg_.device->CreateTexture2D(&desc, nullptr, &tex))) {
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            if (SUCCEEDED(cfg_.deviceCtx->Map(tex, 0, D3D11_MAP_WRITE_DISCARD, 0,
+                                              &mapped))) {
+                BYTE* dst = static_cast<BYTE*>(mapped.pData);
+                for (int r = 0; r < h; ++r)
+                    memcpy(dst + (size_t)r * mapped.RowPitch,
+                           scanline + (size_t)r * w, (size_t)w);
+                BYTE* uvSrc = scanline + ySize;
+                BYTE* uvDst = dst + (size_t)mapped.RowPitch * h;
+                for (int r = 0; r < h / 2; ++r)
+                    memcpy(uvDst + (size_t)r * mapped.RowPitch,
+                           uvSrc + (size_t)r * w, (size_t)w);
+                cfg_.deviceCtx->Unmap(tex, 0);
+                frame->texture.Attach(tex);
+                frame->format = DXGI_FORMAT_NV12;
+                ok = true;
+            } else if (tex) {
+                tex->Release();
+            }
+        }
+    }
+    buf->Unlock();
+    return ok;
 }
 
 } // namespace od::video

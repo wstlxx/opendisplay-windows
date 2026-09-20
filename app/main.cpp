@@ -293,6 +293,8 @@ bool App::Setup(int port) {
     // --- Decoder ---
     video::H264Decoder::Config dcfg;
     dcfg.dxgiManager = dxgiManager;
+    dcfg.device = device;
+    dcfg.deviceCtx = deviceCtx;
     dcfg.onFrame = [this](std::shared_ptr<video::DecodedFrame> f) {
         {
             std::lock_guard lock(frameMutex);
