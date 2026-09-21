@@ -226,10 +226,39 @@ bool MdnsAdvertiser::Start(const Config& cfg) {
     DWORD ttl = 2;
     setsockopt(sock_, IPPROTO_IP, IP_MULTICAST_TTL,
                reinterpret_cast<const char*>(&ttl), sizeof(ttl));
+    DWORD loop = 1;  // receive our own announcements (local loopback)
+    setsockopt(sock_, IPPROTO_IP, IP_MULTICAST_LOOP,
+               reinterpret_cast<const char*>(&loop), sizeof(loop));
 
     LOG_INFO("mdns: advertising '%s' (%s) as %s port %u (recv=%s)",
              instanceName_.c_str(), ipv4_.c_str(), kServiceType,
              unsigned(cfg_.port), canReceive_ ? "yes" : "no");
+
+    // Self-test: transmit one announcement and confirm it loops back to us.
+    // Proves the local mDNS multicast TX+RX path works on this host; if it
+    // fails, the NIC / multicast group isn't functional locally, and the Mac
+    // could never see us regardless of the network.
+    if (!announcement_.empty()) {
+        sockaddr_in group{};
+        group.sin_family = AF_INET;
+        group.sin_port = htons(kMulticastPort);
+        inet_pton(AF_INET, kMulticastGroup, &group.sin_addr);
+        sendto(sock_, reinterpret_cast<const char*>(announcement_.data()),
+               int(announcement_.size()), 0, reinterpret_cast<sockaddr*>(&group),
+               sizeof(group));
+        uint8_t rbuf[2048];
+        sockaddr_in rfrom{};
+        int rfl = sizeof(rfrom);
+        int rn = recvfrom(sock_, reinterpret_cast<char*>(rbuf), sizeof(rbuf), 0,
+                          reinterpret_cast<sockaddr*>(&rfrom), &rfl);
+        std::string_view rsv(rn > 0 ? reinterpret_cast<const char*>(rbuf) : "",
+                             rn > 0 ? size_t(rn) : 0);
+        if (rn > 0 && rsv.find(kServiceType) != std::string_view::npos)
+            LOG_INFO("mdns: self-test OK — receiving own multicast");
+        else
+            LOG_WARN("mdns: self-test FAILED (n=%d) — not receiving own "
+                     "multicast; check the NIC/interface", rn);
+    }
 
     thread_ = std::thread([this] { ThreadMain(); });
     return true;
