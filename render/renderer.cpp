@@ -323,10 +323,18 @@ void Renderer::Present(const video::DecodedFrame* frame) {
     ctx_->OMSetRenderTargets(1, rtv_.GetAddressOf(), nullptr);
     ctx_->ClearRenderTargetView(rtv_.Get(), clear);
 
+    static long presentN = 0;
+    const long pn = ++presentN;
+
     if (frame && !frame->nv12.empty() && frame->width > 0 && frame->height > 0) {
         // Upload CPU NV12 into our persistent texture (this thread owns D3D).
-        if (EnsureUploadTexture(frame->width, frame->height))
+        const bool up = EnsureUploadTexture(frame->width, frame->height);
+        if (up)
             UploadNv12(frame->nv12.data(), frame->width, frame->height);
+        if (pn <= 5 || (pn % 250) == 0)
+            LOG_INFO("renderer: present %dx%d nv12=%zu upload=%d srvY=%p srvUV=%p (n=%ld)",
+                     frame->width, frame->height, (size_t)frame->nv12.size(),
+                     up ? 1 : 0, (const void*)srvY_.Get(), (const void*)srvUV_.Get(), pn);
 
         // Letterbox rect in window pixels.
         const double scale =
@@ -354,6 +362,8 @@ void Renderer::Present(const video::DecodedFrame* frame) {
 
         ctx_->UpdateSubresource(constants_.Get(), 0, nullptr, &pf, 0, 0);
 
+        if (pn <= 5 || (pn % 250) == 0)
+            LOG_INFO("renderer: drawing (n=%ld)", pn);
         if (srvY_ && srvUV_) {
             ID3D11Buffer* cbuffer = constants_.Get();
             ctx_->VSSetShader(vs_.Get(), nullptr, 0);
@@ -367,6 +377,9 @@ void Renderer::Present(const video::DecodedFrame* frame) {
             ctx_->IASetVertexBuffers(0, 0, nullptr, &stride, &offset);
             ctx_->Draw(3, 0);
         }
+    } else if (pn <= 5 || (pn % 250) == 0) {
+        LOG_WARN("renderer: present with no valid frame (frame=%p) (n=%ld)",
+                 (const void*)frame, pn);
     }
 
     swap_->Present(1, 0);
