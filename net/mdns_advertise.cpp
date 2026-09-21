@@ -96,6 +96,11 @@ std::string MdnsAdvertiser::ComputerName() {
 }
 
 std::string MdnsAdvertiser::FirstLanIPv4() {
+    // Collect every non-loopback IPv4 address, then prefer one that is NOT
+    // link-local (169.254.x.x). A link-local address means DHCP failed; the
+    // peer sits on the real subnet and cannot route to it, so advertising it
+    // would hand the sender an unreachable target.
+    std::vector<std::string> all;
     ULONG size = 16 * 1024;
     std::vector<uint8_t> buf(size);
     const ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
@@ -117,10 +122,15 @@ std::string MdnsAdvertiser::FirstLanIPv4() {
             char text[INET_ADDRSTRLEN] = {};
             auto* sin = reinterpret_cast<sockaddr_in*>(u->Address.lpSockaddr);
             if (inet_ntop(AF_INET, &sin->sin_addr, text, sizeof(text)) != nullptr)
-                return text;
+                all.push_back(text);
         }
     }
-    return {};
+    for (const auto& ip : all)
+        if (ip.rfind("169.254.", 0) != 0) return ip;
+    if (!all.empty())
+        LOG_WARN("mdns: only link-local (169.254.x.x) IPv4 found; DHCP may have "
+                 "failed, the sender may not be able to reach %s", all.front().c_str());
+    return all.empty() ? std::string() : all.front();
 }
 
 bool MdnsAdvertiser::Start(const Config& cfg) {
