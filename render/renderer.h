@@ -43,9 +43,13 @@ private:
     Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> constants_;
 
-    // SRV cache for the most recent texture.
+    // SRV cache for the most recent NV12 texture. NV12 is planar, so a
+    // null-description SRV is NOT pixel-shader-sampleable; we make two planar
+    // SRVs -- Y (R8_UNORM, plane 0) and UV (R8G8_UNORM, plane 1) -- and do the
+    // YUV->RGB conversion in the pixel shader.
     Microsoft::WRL::ComPtr<ID3D11Texture2D> srvTexture_;
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srvY_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srvUV_;
 
     HWND swapHwnd_ = nullptr;
     int clientW_ = 0;

@@ -42,16 +42,28 @@ VSOut VSMain(uint id : SV_VertexID) {
 }
 )hlsl";
 
-// The pixel shader needs the VS output struct defined in the same TU.
-constexpr char kPixelShaderFull[] = R"hlsl(
+// NV12 is planar: Y is R8 (t0), UV is R8G8 (t1). Convert limited-range
+// (16-235 / 16-240) BT.709 YUV to RGB. The Mac screen-capture stream is
+// limited-range; full-range input would render slightly off but still visible.
+constexpr char kPixelShaderYuv[] = R"hlsl(
 struct VSIn {
     float4 pos : SV_Position;
     float2 uv  : TEXCOORD0;
 };
-Texture2D Video : register(t0);
+Texture2D YTex  : register(t0);
+Texture2D UVTex : register(t1);
 SamplerState Smp : register(s0);
 float4 PSMain(VSIn v) : SV_Target {
-    return Video.Sample(Smp, v.uv);
+    float y  = YTex.Sample(Smp, v.uv).r;
+    float2 uv = UVTex.Sample(Smp, v.uv).rg;  // .x=U(Cb) .y=V(Cr)
+    // Un-scale limited range to [0,1] (luma 16-235, chroma 16-240).
+    y  = (y  - (16.0/255.0)) / (219.0/255.0);
+    uv = (uv - (16.0/255.0)) / (224.0/255.0) - 0.5;
+    // BT.709 YUV -> RGB.
+    float r = y + 1.5748 * uv.y;
+    float g = y - 0.1873 * uv.x - 0.4681 * uv.y;
+    float b = y + 1.8558 * uv.x;
+    return float4(saturate(float3(r, g, b)), 1.0);
 }
 )hlsl";
 
@@ -164,7 +176,7 @@ bool Renderer::CreateShaders() {
         }
         return false;
     }
-    hr = D3DCompile(kPixelShaderFull, sizeof(kPixelShaderFull) - 1, "ps.hlsl",
+    hr = D3DCompile(kPixelShaderYuv, sizeof(kPixelShaderYuv) - 1, "ps.hlsl",
                     nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &psBlob, &errs);
     if (FAILED(hr)) {
         if (errs) {
@@ -215,7 +227,8 @@ void Renderer::Resize(int w, int h) {
         }
     }
     // New back buffer: invalidate SRV cache.
-    srv_.Reset();
+    srvY_.Reset();
+    srvUV_.Reset();
     srvTexture_.Reset();
 }
 
@@ -254,23 +267,40 @@ void Renderer::Present(const video::DecodedFrame* frame) {
         ctx_->UpdateSubresource(constants_.Get(), 0, nullptr, &pf, 0, 0);
 
         if (srvTexture_.Get() != frame->texture.Get()) {
-            srv_.Reset();
-            if (FAILED(device_->CreateShaderResourceView(frame->texture.Get(),
-                                                         nullptr,
-                                                         srv_.ReleaseAndGetAddressOf()))) {
-                srvTexture_.Reset();
-            } else {
+            srvY_.Reset();
+            srvUV_.Reset();
+            srvTexture_.Reset();
+
+            D3D11_SRV_DESC ydesc{};
+            ydesc.Format = DXGI_FORMAT_R8_UNORM;
+            ydesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            ydesc.Texture2D.MostDetailedMip = 0;
+            ydesc.Texture2D.MipLevels = 1;
+            D3D11_SRV_DESC uvdesc{};
+            uvdesc.Format = DXGI_FORMAT_R8G8_UNORM;
+            uvdesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            uvdesc.Texture2D.MostDetailedMip = 0;
+            uvdesc.Texture2D.MipLevels = 1;
+            uvdesc.Texture2D.PlaneSlice = 1;  // UV plane
+
+            if (SUCCEEDED(device_->CreateShaderResourceView(frame->texture.Get(),
+                                                            &ydesc,
+                                                            srvY_.ReleaseAndGetAddressOf())) &&
+                SUCCEEDED(device_->CreateShaderResourceView(frame->texture.Get(),
+                                                            &uvdesc,
+                                                            srvUV_.ReleaseAndGetAddressOf()))) {
                 srvTexture_.Attach(frame->texture.Get());
             }
         }
 
-        if (srv_) {
+        if (srvY_ && srvUV_) {
             ID3D11Buffer* cb = constants_.Get();
             ctx_->VSSetShader(vs_.Get(), nullptr, 0);
             ctx_->VSSetConstantBuffers(0, 1, &cb);
             ctx_->PSSetShader(ps_.Get(), nullptr, 0);
             ctx_->PSSetSamplers(0, 1, sampler_.GetAddressOf());
-            ctx_->PSSetShaderResources(0, 1, srv_.GetAddressOf());
+            ID3D11ShaderResourceView* views[2] = {srvY_.Get(), srvUV_.Get()};
+            ctx_->PSSetShaderResources(0, 2, views);
             ctx_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             UINT stride = 0, offset = 0;
             ctx_->IASetVertexBuffers(0, 0, nullptr, &stride, &offset);
