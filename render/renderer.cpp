@@ -321,6 +321,17 @@ void Renderer::Present(const video::DecodedFrame* frame) {
     if (!swap_ || !ctx_ || !rtv_) return; // not (re)initialized yet
     const float clear[4] = {0.06f, 0.06f, 0.08f, 1.0f};
     ctx_->OMSetRenderTargets(1, rtv_.GetAddressOf(), nullptr);
+
+    // Clip-space -> render-target mapping. Clear ignores this, but Draw maps
+    // through it -- without a viewport the fullscreen triangle rasterizes to a
+    // zero area and nothing is drawn (only the clear color shows).
+    D3D11_VIEWPORT vp{};
+    vp.Width = (float)clientW_;
+    vp.Height = (float)clientH_;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    ctx_->IASetViewports(1, &vp);
+
     ctx_->ClearRenderTargetView(rtv_.Get(), clear);
 
     static long presentN = 0;
