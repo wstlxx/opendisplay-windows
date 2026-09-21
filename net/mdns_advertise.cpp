@@ -315,6 +315,14 @@ void MdnsAdvertiser::ThreadMain() {
                 int n = recvfrom(sock_, reinterpret_cast<char*>(buf), sizeof(buf), 0,
                                  reinterpret_cast<sockaddr*>(&from), &fromlen);
                 if (n > 0) {
+                    {
+                        char ip[INET_ADDRSTRLEN] = {};
+                        inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
+                        if (anyRecvCount_ < 10)
+                            LOG_INFO("mdns: recv %d bytes from %s:%u", n, ip,
+                                     unsigned(ntohs(from.sin_port)));
+                        ++anyRecvCount_;
+                    }
                     std::string_view sv(reinterpret_cast<const char*>(buf),
                                         size_t(n));
                     if (sv.find(marker) != std::string_view::npos) {
