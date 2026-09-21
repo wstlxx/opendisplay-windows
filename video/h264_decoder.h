@@ -73,9 +73,10 @@ typedef struct MFT_OUTPUT_DATA_BUFFER {
 namespace od::video {
 
 struct DecodedFrame {
-#ifdef _WIN32
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
-#endif
+    // Decoded NV12 pixels in system memory (Y plane w*h, then UV plane w*h/2).
+    // Filled on the decode thread (CPU only); the render thread uploads it to a
+    // D3D11 texture. NV12 is planar, so the UV plane is interleaved U0 V0 U1 V1.
+    std::vector<uint8_t> nv12;
     int width = 0;
     int height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
@@ -123,8 +124,6 @@ private:
     bool SetOutputNv12();
     bool FeedAccessUnit(const std::vector<uint8_t>& annexb);
     void PublishNv12(IMFSample* outSample);
-    bool UploadNv12ToTexture(IMFMediaBuffer* buf,
-                             std::shared_ptr<DecodedFrame> frame);
     void ResetMft();
     void RequestKeyframe();
 #endif

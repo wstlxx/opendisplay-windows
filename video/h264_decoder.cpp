@@ -88,59 +88,6 @@ bool H264Decoder::SetupMft() {
     return true;
 }
 
-// Upload a decoded system-memory NV12 buffer to a fresh D3D11 texture.
-bool H264Decoder::UploadNv12ToTexture(IMFMediaBuffer* buf,
-                                      std::shared_ptr<DecodedFrame> frame) {
-    const int w = frame->width, h = frame->height;
-    const size_t ySize = (size_t)w * (size_t)h;
-    const size_t uvSize = (size_t)w * (size_t)(h / 2);
-
-    BYTE* scanline = nullptr;
-    DWORD maxLen = 0, curLen = 0;
-    if (FAILED(buf->Lock(&scanline, &maxLen, &curLen))) return false;
-    const bool bigEnough = curLen >= (DWORD)(ySize + uvSize);
-
-    bool ok = false;
-    if (bigEnough) {
-        D3D11_TEXTURE2D_DESC desc{};
-        desc.Width = (UINT)w;
-        desc.Height = (UINT)h;
-        desc.MipLevels = 1;
-        desc.ArraySize = 1;
-        desc.Format = DXGI_FORMAT_NV12;
-        desc.SampleDesc.Count = 1;
-        desc.SampleDesc.Quality = 0;
-        desc.Usage = D3D11_USAGE_DYNAMIC;
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-
-        ID3D11Texture2D* tex = nullptr;
-        if (SUCCEEDED(cfg_.device->CreateTexture2D(&desc, nullptr, &tex))) {
-            D3D11_MAPPED_SUBRESOURCE mapped{};
-            if (SUCCEEDED(cfg_.deviceCtx->Map(tex, 0, D3D11_MAP_WRITE_DISCARD, 0,
-                                              &mapped))) {
-                BYTE* dst = static_cast<BYTE*>(mapped.pData);
-                for (int r = 0; r < h; ++r)
-                    memcpy(dst + (size_t)r * mapped.RowPitch,
-                           scanline + (size_t)r * w, (size_t)w);
-                BYTE* uvSrc = scanline + ySize;
-                BYTE* uvDst = dst + (size_t)mapped.RowPitch * h;
-                for (int r = 0; r < h / 2; ++r)
-                    memcpy(uvDst + (size_t)r * mapped.RowPitch,
-                           uvSrc + (size_t)r * w, (size_t)w);
-                cfg_.deviceCtx->Unmap(tex, 0);
-                frame->texture.Attach(tex);
-                frame->format = DXGI_FORMAT_NV12;
-                ok = true;
-            } else if (tex) {
-                tex->Release();
-            }
-        }
-    }
-    buf->Unlock();
-    return ok;
-}
-
 void H264Decoder::PublishNv12(IMFSample* outSample) {
     IMFMediaBuffer* buf = nullptr;
     if (FAILED(outSample->GetBufferByIndex(0, &buf)) || !buf) return;
@@ -156,19 +103,30 @@ void H264Decoder::PublishNv12(IMFSample* outSample) {
         }
     }
 
-    if (cfg_.device && cfg_.deviceCtx && frame->width > 0 && frame->height > 0) {
-        if (UploadNv12ToTexture(buf, frame)) {
-            uint64_t n = ++publishedFrames_;
-            if (n <= 3 || (n % 250) == 0)
-                LOG_INFO("decoder: published frame #%llu %dx%d", n,
-                         (unsigned long long)frame->width,
-                         (unsigned long long)frame->height);
-            if (cfg_.onFrame) cfg_.onFrame(frame);
+    if (frame->width > 0 && frame->height > 0) {
+        // Copy the decoded NV12 into the frame (CPU only). The D3D11 upload is
+        // done on the render thread: a D3D11 immediate context is single-
+        // threaded, so the decode thread must not call Map/Unmap on it.
+        const size_t ySize = (size_t)frame->width * (size_t)frame->height;
+        const size_t total = ySize + ySize / 2;  // Y (w*h) + UV (w*h/2)
+        BYTE* scanline = nullptr;
+        DWORD maxLen = 0, curLen = 0;
+        if (SUCCEEDED(buf->Lock(&scanline, &maxLen, &curLen))) {
+            if (curLen >= total) {
+                frame->nv12.assign(scanline, scanline + total);
+                frame->format = DXGI_FORMAT_NV12;
+                uint64_t n = ++publishedFrames_;
+                if (n <= 3 || (n % 250) == 0)
+                    LOG_INFO("decoder: published frame #%llu %dx%d", n,
+                             (unsigned long long)frame->width,
+                             (unsigned long long)frame->height);
+                if (cfg_.onFrame) cfg_.onFrame(frame);
+            }
+            buf->Unlock();
         }
     } else {
-        if (frame->width <= 0 || frame->height <= 0)
-            LOG_WARN("decoder: no frame size on output type (w=%d h=%d)",
-                     frame->width, frame->height);
+        LOG_WARN("decoder: no frame size on output type (w=%d h=%d)",
+                 frame->width, frame->height);
     }
     buf->Release();
 }

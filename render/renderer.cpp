@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <cstring>
 
 #include <d3dcompiler.h>
 
@@ -242,10 +243,78 @@ void Renderer::Resize(int w, int h) {
             tex->Release();
         }
     }
-    // New back buffer: invalidate SRV cache.
+}
+
+// (Re)create the persistent NV12 upload texture + its two planar SRVs when the
+// frame size changes. Main thread only.
+bool Renderer::EnsureUploadTexture(int w, int h) {
+    if (uploadTex_.Get() && uploadW_ == w && uploadH_ == h) return true;
+
     srvY_.Reset();
     srvUV_.Reset();
-    srvTexture_.Reset();
+    uploadTex_.Reset();
+
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = (UINT)w;
+    desc.Height = (UINT)h;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_NV12;
+    desc.SampleDesc.Count = 1;
+    desc.SampleDesc.Quality = 0;
+    desc.Usage = D3D11_USAGE_DYNAMIC;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    if (FAILED(device_->CreateTexture2D(&desc, nullptr,
+                                       uploadTex_.ReleaseAndGetAddressOf()))) {
+        LOG_ERROR("renderer: upload texture creation failed (%dx%d)", w, h);
+        return false;
+    }
+    uploadW_ = w;
+    uploadH_ = h;
+
+    OdSrvDesc ydesc{};
+    ydesc.Format = DXGI_FORMAT_R8_UNORM;
+    ydesc.ViewDimension = static_cast<UINT>(D3D11_SRV_DIMENSION_TEXTURE2D);
+    ydesc.MostDetailedMip = 0;
+    ydesc.MipLevels = 1;
+    ydesc.PlaneSlice = 0;  // Y plane
+    OdSrvDesc uvdesc{};
+    uvdesc.Format = DXGI_FORMAT_R8G8_UNORM;
+    uvdesc.ViewDimension = static_cast<UINT>(D3D11_SRV_DIMENSION_TEXTURE2D);
+    uvdesc.MostDetailedMip = 0;
+    uvdesc.MipLevels = 1;
+    uvdesc.PlaneSlice = 1;  // UV plane
+    if (FAILED(device_->CreateShaderResourceView(
+            uploadTex_.Get(),
+            reinterpret_cast<const D3D11_SHADER_RESOURCE_VIEW_DESC*>(&ydesc),
+            srvY_.ReleaseAndGetAddressOf())) ||
+        FAILED(device_->CreateShaderResourceView(
+            uploadTex_.Get(),
+            reinterpret_cast<const D3D11_SHADER_RESOURCE_VIEW_DESC*>(&uvdesc),
+            srvUV_.ReleaseAndGetAddressOf()))) {
+        LOG_ERROR("renderer: SRV creation failed");
+        uploadTex_.Reset();
+        uploadW_ = uploadH_ = 0;
+        return false;
+    }
+    return true;
+}
+
+// Copy CPU NV12 rows into the upload texture. Main thread only.
+void Renderer::UploadNv12(const uint8_t* nv12, int w, int h) {
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(ctx_->Map(uploadTex_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0,
+                          &mapped)))
+        return;
+    BYTE* dst = static_cast<BYTE*>(mapped.pData);
+    for (int r = 0; r < h; ++r)
+        memcpy(dst + (size_t)r * mapped.RowPitch, nv12 + (size_t)r * w, (size_t)w);
+    BYTE* uvDst = dst + (size_t)mapped.RowPitch * h;
+    const uint8_t* uvSrc = nv12 + (size_t)w * h;
+    for (int r = 0; r < h / 2; ++r)
+        memcpy(uvDst + (size_t)r * mapped.RowPitch, uvSrc + (size_t)r * w, (size_t)w);
+    ctx_->Unmap(uploadTex_.Get(), 0);
 }
 
 void Renderer::Present(const video::DecodedFrame* frame) {
@@ -254,7 +323,11 @@ void Renderer::Present(const video::DecodedFrame* frame) {
     ctx_->OMSetRenderTargets(1, rtv_.GetAddressOf(), nullptr);
     ctx_->ClearRenderTargetView(rtv_.Get(), clear);
 
-    if (frame && frame->texture && frame->width > 0 && frame->height > 0) {
+    if (frame && !frame->nv12.empty() && frame->width > 0 && frame->height > 0) {
+        // Upload CPU NV12 into our persistent texture (this thread owns D3D).
+        if (EnsureUploadTexture(frame->width, frame->height))
+            UploadNv12(frame->nv12.data(), frame->width, frame->height);
+
         // Letterbox rect in window pixels.
         const double scale =
             std::min(double(clientW_) / frame->width,
@@ -267,7 +340,6 @@ void Renderer::Present(const video::DecodedFrame* frame) {
         pf.WinRect[2] = float(dw);
         pf.WinRect[3] = float(dh);
 
-        // Crop rect in normalized texture coordinates.
         const double w = frame->width, h = frame->height;
         const double cl = std::clamp(frame->cropLeft, 0, int(w));
         const double ct = std::clamp(frame->cropTop, 0, int(h));
@@ -281,36 +353,6 @@ void Renderer::Present(const video::DecodedFrame* frame) {
         pf.WindowSize[1] = float(clientH_);
 
         ctx_->UpdateSubresource(constants_.Get(), 0, nullptr, &pf, 0, 0);
-
-        if (srvTexture_.Get() != frame->texture.Get()) {
-            srvY_.Reset();
-            srvUV_.Reset();
-            srvTexture_.Reset();
-
-            OdSrvDesc ydesc{};
-            ydesc.Format = DXGI_FORMAT_R8_UNORM;
-            ydesc.ViewDimension = static_cast<UINT>(D3D11_SRV_DIMENSION_TEXTURE2D);
-            ydesc.MostDetailedMip = 0;
-            ydesc.MipLevels = 1;
-            ydesc.PlaneSlice = 0;  // Y plane
-            OdSrvDesc uvdesc{};
-            uvdesc.Format = DXGI_FORMAT_R8G8_UNORM;
-            uvdesc.ViewDimension = static_cast<UINT>(D3D11_SRV_DIMENSION_TEXTURE2D);
-            uvdesc.MostDetailedMip = 0;
-            uvdesc.MipLevels = 1;
-            uvdesc.PlaneSlice = 1;  // UV plane
-
-            if (SUCCEEDED(device_->CreateShaderResourceView(
-                            frame->texture.Get(),
-                            reinterpret_cast<const D3D11_SHADER_RESOURCE_VIEW_DESC*>(&ydesc),
-                            srvY_.ReleaseAndGetAddressOf())) &&
-                SUCCEEDED(device_->CreateShaderResourceView(
-                            frame->texture.Get(),
-                            reinterpret_cast<const D3D11_SHADER_RESOURCE_VIEW_DESC*>(&uvdesc),
-                            srvUV_.ReleaseAndGetAddressOf()))) {
-                srvTexture_.Attach(frame->texture.Get());
-            }
-        }
 
         if (srvY_ && srvUV_) {
             ID3D11Buffer* cbuffer = constants_.Get();

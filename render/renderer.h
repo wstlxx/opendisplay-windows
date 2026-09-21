@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 
 #include "../video/h264_decoder.h"
@@ -31,6 +32,11 @@ public:
 private:
     bool CreateSwapChain(int w, int h);
     bool CreateShaders();
+    // Main thread only. (Re)create the persistent NV12 upload texture + its two
+    // planar SRVs when the frame size changes.
+    bool EnsureUploadTexture(int w, int h);
+    // Main thread only. Copy CPU NV12 rows into the upload texture.
+    void UploadNv12(const uint8_t* nv12, int w, int h);
 
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> ctx_;
@@ -43,11 +49,13 @@ private:
     Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> constants_;
 
-    // SRV cache for the most recent NV12 texture. NV12 is planar, so a
-    // null-description SRV is NOT pixel-shader-sampleable; we make two planar
-    // SRVs -- Y (R8_UNORM, plane 0) and UV (R8G8_UNORM, plane 1) -- and do the
-    // YUV->RGB conversion in the pixel shader.
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> srvTexture_;
+    // The render thread owns a persistent NV12 upload texture (DYNAMIC). Each
+    // frame's CPU NV12 (produced by the decode thread) is uploaded here on the
+    // main thread -- a D3D11 immediate context must not be shared across
+    // threads. NV12 is planar, so two planar SRVs (Y as R8 plane 0, UV as R8G8
+    // plane 1) are made on it and YUV->RGB is done in the pixel shader.
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> uploadTex_;
+    int uploadW_ = 0, uploadH_ = 0;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srvY_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srvUV_;
 
