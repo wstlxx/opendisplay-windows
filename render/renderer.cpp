@@ -271,12 +271,15 @@ void Renderer::Present(const video::DecodedFrame* frame) {
             srvUV_.Reset();
             srvTexture_.Reset();
 
-            D3D11_SRV_DESC ydesc{};
+            // NOTE: the CI runner's reduced SDK omits the D3D11_SRV_DESC alias;
+            // the canonical name D3D11_SHADER_RESOURCE_VIEW_DESC is what
+            // CreateShaderResourceView actually takes.
+            D3D11_SHADER_RESOURCE_VIEW_DESC ydesc{};
             ydesc.Format = DXGI_FORMAT_R8_UNORM;
             ydesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
             ydesc.Texture2D.MostDetailedMip = 0;
             ydesc.Texture2D.MipLevels = 1;
-            D3D11_SRV_DESC uvdesc{};
+            D3D11_SHADER_RESOURCE_VIEW_DESC uvdesc{};
             uvdesc.Format = DXGI_FORMAT_R8G8_UNORM;
             uvdesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
             uvdesc.Texture2D.MostDetailedMip = 0;
