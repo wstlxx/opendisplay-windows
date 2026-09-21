@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -34,6 +35,7 @@
 #include <thread>
 
 #include "../net/log.h"
+#include "../net/mdns_advertise.h"
 #include "../net/session.h"
 #include "../net/tcp_listener.h"
 #include "../protocol/control.h"
@@ -58,18 +60,34 @@ int64_t SteadyNowMs() {
         .count();
 }
 
-std::string MakeHelloId() {
+// Defined below; needed here so the id can be persisted next to the exe.
+std::string ExeDir();
+
+// Stable per-install identity (PROTOCOL.md 2.1): the Bonjour TXT `id` MUST
+// equal the hello `id`, so a sender recognizes "same device, new name/port".
+// A random 32-hex value is generated on first run and persisted to disk.
+std::string MakeStableHelloId() {
+    const std::string path = ExeDir() + "opendisplay_id";
+    {
+        std::ifstream in(path);
+        std::string existing;
+        if (in) std::getline(in, existing);
+        if (existing.size() == 32) return existing;
+    }
     static std::mt19937_64 rng(
         std::random_device{}() ^ static_cast<uint64_t>(
                                      reinterpret_cast<uintptr_t>(&rng)));
-    char buf[33];
     const char* hex = "0123456789abcdef";
+    char buf[33];
     for (int i = 0; i < 32; ++i) {
         const uint64_t r = rng() & 0xF;
         buf[i] = hex[r];
     }
     buf[32] = 0;
-    return buf;
+    std::string id(buf);
+    std::ofstream out(path, std::ios::trunc);
+    if (out) out << id << "\n";
+    return id;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +124,9 @@ struct App {
     // thread) records it here; the main loop reaps it so that ~Session (which
     // joins the read thread) never runs on the read thread itself.
     net::Session* endedSession = nullptr;   // guarded by sessionMutex
-    std::string helloId = MakeHelloId();
+    std::string helloId = MakeStableHelloId();
+    net::MdnsAdvertiser mdns;      // Bonjour/mDNS advertisement
+    std::string mdnsName;          // --name flag; empty => computer name
 
     // hello resend after user resize (debounced, PROTOCOL.md 6.1)
     int64_t resizeAtMs = 0;
@@ -330,6 +350,15 @@ bool App::Setup(int port) {
         return false;
     }
 
+    // --- Bonjour/mDNS advertisement (so a Mac sender can discover us) ---
+    net::MdnsAdvertiser::Config mc;
+    mc.instanceName = mdnsName;  // empty => computer name
+    mc.id = helloId;             // MUST equal the hello id (PROTOCOL.md 2.1)
+    mc.pv = 3;
+    mc.port = static_cast<uint16_t>(port);
+    if (!mdns.Start(mc))
+        LOG_WARN("mdns: advertisement not started (discovery needs a direct dial)");
+
     running = true;
     return true;
 }
@@ -549,6 +578,7 @@ void App::TearDown() {
     if (decodeThread.joinable()) decodeThread.join();
     if (decoder) decoder->Shutdown();
     listener.Stop();
+    mdns.Stop();
 
     if (frameEvent) CloseHandle(frameEvent);
     if (hwnd) {
@@ -593,13 +623,18 @@ std::string ExeDir() {
 int main(int argc, char** argv) {
     int port = 9000;
     const char* logFile = nullptr;
+    std::string mdnsName;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--port" && i + 1 < argc) {
             port = std::atoi(argv[++i]);
         } else if (std::string(argv[i]) == "--log" && i + 1 < argc) {
             logFile = argv[++i];
+        } else if (std::string(argv[i]) == "--name" && i + 1 < argc) {
+            mdnsName = argv[++i];
         } else {
-            std::printf("usage: opendisplay_receiver [--port N] [--log file]\n");
+            std::printf(
+                "usage: opendisplay_receiver [--port N] [--log file] [--name "
+                "S]\n");
             return 1;
         }
     }
@@ -626,6 +661,7 @@ int main(int argc, char** argv) {
     }
 
     App app;
+    app.mdnsName = std::move(mdnsName);
     int rc = 1;
     if (app.Setup(port)) {
         app.Run();

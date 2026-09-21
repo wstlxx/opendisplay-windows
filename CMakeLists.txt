@@ -66,8 +66,9 @@ if(WIN32)
         net/log.cpp
         net/tcp_listener.cpp
         net/session.cpp
+        net/mdns_advertise.cpp
     )
-    target_link_libraries(od_net PUBLIC od_protocol ws2_32)
+    target_link_libraries(od_net PUBLIC od_protocol ws2_32 iphlpapi)
 
     add_library(od_video STATIC
         video/h264_decoder.cpp

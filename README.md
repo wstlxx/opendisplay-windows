@@ -20,6 +20,9 @@ No Electron, no Python, no VLC — one small C++20/Win32 executable.
 
 - **pv 3 protocol**: length-prefixed framing, JSON control demux, Annex-B parsing,
   SPS/PPS extraction, SPS dimension decode.
+- **Bonjour/mDNS discovery**: advertises `_opensidecar._tcp` (TXT `id` = the stable
+  per-install hello id, `pv` = 3) so a Mac sender finds it on the LAN; answers
+  queries and sends periodic announcements (works even if the OS holds port 5353).
 - **Real-time hardware decode** via Media Foundation (`MF_LOW_LATENCY`,
   `MF_DECODE_TO_DISPLAY`, shared D3D11 device through the DXGI device manager).
   Falls back to software decode + CPU upload when no DXVA device is present.
@@ -85,13 +88,16 @@ g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -I. \
 ## Run
 
 ```
-opendisplay_receiver.exe [--port N] [--log file]
+opendisplay_receiver.exe [--port N] [--log file] [--name S]
 ```
 
-1. Start the receiver (defaults to `0.0.0.0:9000`).
-2. On the Mac, point the OpenDisplay sender at the machine. It connects, sends
-   `hello` → you reply `welcome`, then streams H.264 + control JSON.
-3. **F1** toggles fullscreen, **Esc** exits fullscreen, closing the window quits.
+1. Start the receiver (defaults to `0.0.0.0:9000`). It advertises itself on the
+   LAN via Bonjour (`_opensidecar._tcp`); the name defaults to the computer name
+   or `--name S`.
+2. On the Mac, the OpenDisplay sender discovers it automatically (or you can dial
+   the machine's IP:port directly). It connects, sends `hello` → you reply
+   `welcome`, then streams H.264 + control JSON.
+3. **F** toggles fullscreen, **Esc** exits fullscreen, closing the window quits.
 
 The console prints the connection, the decoded stream size, the negotiated RTT,
 and a periodic `fps`/`rtt` line.
