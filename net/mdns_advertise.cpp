@@ -74,16 +74,25 @@ void AppendRecord(std::vector<uint8_t>& out, const std::string& name,
 MdnsAdvertiser::~MdnsAdvertiser() { Stop(); }
 
 std::string MdnsAdvertiser::ComputerName() {
-    WCHAR name[MAX_COMPUTERNAME_LENGTH + 1] = {};
-    DWORD len = sizeof(name) / sizeof(name[0]);
-    if (!GetComputerNameExW(COMPUTER_NAME_DNS_DOMAIN, name, &len)) return {};
-    int n = WideCharToMultiByte(CP_UTF8, 0, name, -1, nullptr, 0, nullptr, nullptr);
-    std::string out;
-    if (n > 1) {
-        out.resize(n - 1);
-        WideCharToMultiByte(CP_UTF8, 0, name, -1, &out[0], n, nullptr, nullptr);
+    // Prefer the DNS host name ("MyPC", no domain) as the .local base; fall
+    // back to the NetBIOS name. COMPUTER_NAME_FORMAT values are CamelCase.
+    const COMPUTER_NAME_FORMAT formats[] = {ComputerNameDnsHostname,
+                                            ComputerNameNetBIOS};
+    for (COMPUTER_NAME_FORMAT fmt : formats) {
+        WCHAR name[MAX_COMPUTERNAME_LENGTH + 1] = {};
+        DWORD len = sizeof(name) / sizeof(name[0]);
+        if (!GetComputerNameExW(fmt, name, &len)) continue;
+        int n = WideCharToMultiByte(CP_UTF8, 0, name, -1, nullptr, 0, nullptr,
+                                    nullptr);
+        std::string out;
+        if (n > 1) {
+            out.resize(n - 1);
+            WideCharToMultiByte(CP_UTF8, 0, name, -1, &out[0], n, nullptr,
+                                nullptr);
+        }
+        if (!out.empty()) return out;
     }
-    return out;
+    return {};
 }
 
 std::string MdnsAdvertiser::FirstLanIPv4() {
