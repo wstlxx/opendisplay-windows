@@ -21,6 +21,12 @@ constexpr const char* kServiceDomain = "_opensidecar._tcp.local";
 constexpr const char* kMulticastGroup = "224.0.0.251";
 constexpr uint16_t kMulticastPort = 5353;
 constexpr int kReannounceSecs = 10;
+// Detection marker. A DNS name is label-encoded on the wire (each label is a
+// length byte + its bytes), so the dotted "_opensidecar._tcp" does NOT appear
+// as a contiguous substring in a packet. A single label, however, does, so we
+// match on "_opensidecar" (present in both our announcements and any query for
+// this service type).
+constexpr const char* kDetectMarker = "_opensidecar";
 
 enum : uint16_t { kTypeA = 1, kTypePtr = 12, kTypeTxt = 16, kTypeSrv = 33 };
 
@@ -253,7 +259,7 @@ bool MdnsAdvertiser::Start(const Config& cfg) {
                           reinterpret_cast<sockaddr*>(&rfrom), &rfl);
         std::string_view rsv(rn > 0 ? reinterpret_cast<const char*>(rbuf) : "",
                              rn > 0 ? size_t(rn) : 0);
-        if (rn > 0 && rsv.find(kServiceType) != std::string_view::npos)
+        if (rn > 0 && rsv.find(kDetectMarker) != std::string_view::npos)
             LOG_INFO("mdns: self-test OK — receiving own multicast");
         else
             LOG_WARN("mdns: self-test FAILED (n=%d) — not receiving own "
@@ -291,7 +297,7 @@ void MdnsAdvertiser::ThreadMain() {
     SendAnnouncement(announcement_);
     last = clock::now();
 
-    const std::string marker = kServiceType;
+    const std::string marker = kDetectMarker;
     while (running_) {
         if (canReceive_) {
             fd_set rs;
