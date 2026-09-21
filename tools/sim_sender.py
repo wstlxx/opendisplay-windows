@@ -20,6 +20,7 @@ The sample file (tests/data/sample.h264) is a 640x480 H.264 capture.
 
 import argparse
 import json
+import os
 import socket
 import struct
 import sys
@@ -249,7 +250,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=9000)
-    ap.add_argument("--file", default="tests/data/sample.h264")
+    # Default to the sample.h264 sitting next to this script (the CI artifact
+    # bundles both in one folder); fall back to the repo layout otherwise.
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _default_file = os.path.join(_here, "sample.h264")
+    if not os.path.exists(_default_file):
+        _default_file = "tests/data/sample.h264"
+    ap.add_argument("--file", default=_default_file)
     ap.add_argument("--fps", type=float, default=25.0)
     ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--height", type=int, default=480)

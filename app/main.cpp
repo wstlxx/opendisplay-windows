@@ -285,6 +285,7 @@ bool App::Setup(int port) {
     }
     uiScale = static_cast<double>(GetDpiForWindow(hwnd)) / 96.0;
     ShowWindow(hwnd, SW_SHOW);
+    LOG_INFO("window shown; calling renderer.Init");
 
     if (!renderer.Init(hwnd, device, initW, initH)) return false;
 

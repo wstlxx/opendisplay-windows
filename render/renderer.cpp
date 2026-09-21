@@ -73,16 +73,21 @@ bool Renderer::Init(HWND hwnd, Microsoft::WRL::ComPtr<ID3D11Device> device,
     clientH_ = clientH;
     swapHwnd_ = hwnd;
     device_ = std::move(device);
+    LOG_INFO("renderer: Init begin %dx%d", clientW, clientH);
     device_->GetImmediateContext(ctx_.ReleaseAndGetAddressOf());
+    LOG_INFO("renderer: got immediate context");
 
     if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory2),
                                   reinterpret_cast<void**>(factory_.ReleaseAndGetAddressOf())))) {
         LOG_ERROR("renderer: CreateDXGIFactory1 failed");
         return false;
     }
+    LOG_INFO("renderer: DXGI factory up");
 
     if (!CreateSwapChain(clientW, clientH)) return false;
+    LOG_INFO("renderer: swap chain up");
     if (!CreateShaders()) return false;
+    LOG_INFO("renderer: shaders up");
 
     // Constant buffer (PerFrame).
     D3D11_BUFFER_DESC bd{};
