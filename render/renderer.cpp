@@ -77,6 +77,22 @@ struct PerFrame {
     float _pad[2];
 };
 
+// Full D3D11 SRV-desc layout for a Texture2D view. The CI runner's reduced SDK
+// omits PlaneSlice from D3D11_TEX2D_SRV (required to select the UV plane of a
+// planar format like NV12), so we build the desc ourselves with the exact D3D11
+// ABI offsets -- Format@0, ViewDimension@4, MostDetailedMip@8, MipLevels@12,
+// PlaneSlice@16 -- and hand it to CreateShaderResourceView via a
+// reinterpret-cast to the SDK's D3D11_SHADER_RESOURCE_VIEW_DESC (present for the
+// method signature). The runtime only reads through offset 16 for a Texture2D
+// view, so this 20-byte struct is safe even though the real desc is larger.
+struct OdSrvDesc {
+    DXGI_FORMAT Format;
+    UINT ViewDimension;  // D3D11_SRV_DIMENSION_TEXTURE2D
+    UINT MostDetailedMip;
+    UINT MipLevels;
+    UINT PlaneSlice;
+};
+
 } // namespace
 
 bool Renderer::Init(HWND hwnd, Microsoft::WRL::ComPtr<ID3D11Device> device,
@@ -271,35 +287,35 @@ void Renderer::Present(const video::DecodedFrame* frame) {
             srvUV_.Reset();
             srvTexture_.Reset();
 
-            // NOTE: the CI runner's reduced SDK omits the D3D11_SRV_DESC alias;
-            // the canonical name D3D11_SHADER_RESOURCE_VIEW_DESC is what
-            // CreateShaderResourceView actually takes.
-            D3D11_SHADER_RESOURCE_VIEW_DESC ydesc{};
+            OdSrvDesc ydesc{};
             ydesc.Format = DXGI_FORMAT_R8_UNORM;
-            ydesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-            ydesc.Texture2D.MostDetailedMip = 0;
-            ydesc.Texture2D.MipLevels = 1;
-            D3D11_SHADER_RESOURCE_VIEW_DESC uvdesc{};
+            ydesc.ViewDimension = static_cast<UINT>(D3D11_SRV_DIMENSION_TEXTURE2D);
+            ydesc.MostDetailedMip = 0;
+            ydesc.MipLevels = 1;
+            ydesc.PlaneSlice = 0;  // Y plane
+            OdSrvDesc uvdesc{};
             uvdesc.Format = DXGI_FORMAT_R8G8_UNORM;
-            uvdesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-            uvdesc.Texture2D.MostDetailedMip = 0;
-            uvdesc.Texture2D.MipLevels = 1;
-            uvdesc.Texture2D.PlaneSlice = 1;  // UV plane
+            uvdesc.ViewDimension = static_cast<UINT>(D3D11_SRV_DIMENSION_TEXTURE2D);
+            uvdesc.MostDetailedMip = 0;
+            uvdesc.MipLevels = 1;
+            uvdesc.PlaneSlice = 1;  // UV plane
 
-            if (SUCCEEDED(device_->CreateShaderResourceView(frame->texture.Get(),
-                                                            &ydesc,
-                                                            srvY_.ReleaseAndGetAddressOf())) &&
-                SUCCEEDED(device_->CreateShaderResourceView(frame->texture.Get(),
-                                                            &uvdesc,
-                                                            srvUV_.ReleaseAndGetAddressOf()))) {
+            if (SUCCEEDED(device_->CreateShaderResourceView(
+                            frame->texture.Get(),
+                            reinterpret_cast<const D3D11_SHADER_RESOURCE_VIEW_DESC*>(&ydesc),
+                            srvY_.ReleaseAndGetAddressOf())) &&
+                SUCCEEDED(device_->CreateShaderResourceView(
+                            frame->texture.Get(),
+                            reinterpret_cast<const D3D11_SHADER_RESOURCE_VIEW_DESC*>(&uvdesc),
+                            srvUV_.ReleaseAndGetAddressOf()))) {
                 srvTexture_.Attach(frame->texture.Get());
             }
         }
 
         if (srvY_ && srvUV_) {
-            ID3D11Buffer* cb = constants_.Get();
+            ID3D11Buffer* cbuffer = constants_.Get();
             ctx_->VSSetShader(vs_.Get(), nullptr, 0);
-            ctx_->VSSetConstantBuffers(0, 1, &cb);
+            ctx_->VSSetConstantBuffers(0, 1, &cbuffer);
             ctx_->PSSetShader(ps_.Get(), nullptr, 0);
             ctx_->PSSetSamplers(0, 1, sampler_.GetAddressOf());
             ID3D11ShaderResourceView* views[2] = {srvY_.Get(), srvUV_.Get()};
