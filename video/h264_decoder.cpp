@@ -157,8 +157,18 @@ void H264Decoder::PublishNv12(IMFSample* outSample) {
     }
 
     if (cfg_.device && cfg_.deviceCtx && frame->width > 0 && frame->height > 0) {
-        if (UploadNv12ToTexture(buf, frame) && cfg_.onFrame)
-            cfg_.onFrame(frame);
+        if (UploadNv12ToTexture(buf, frame)) {
+            uint64_t n = ++publishedFrames_;
+            if (n <= 3 || (n % 250) == 0)
+                LOG_INFO("decoder: published frame #%llu %dx%d", n,
+                         (unsigned long long)frame->width,
+                         (unsigned long long)frame->height);
+            if (cfg_.onFrame) cfg_.onFrame(frame);
+        }
+    } else {
+        if (frame->width <= 0 || frame->height <= 0)
+            LOG_WARN("decoder: no frame size on output type (w=%d h=%d)",
+                     frame->width, frame->height);
     }
     buf->Release();
 }
@@ -181,11 +191,17 @@ bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb) {
             return false;
         inSample->AddBuffer(inBuf.Get());
         const HRESULT hr = decoder_->ProcessInput(0, inSample.Get(), 0);
+        uint64_t fc = ++fedCount_;
         if (FAILED(hr) && hr != MF_E_NOTACCEPTING) {
             LOG_ERROR("decoder: ProcessInput failed: 0x%lX",
                       static_cast<unsigned long>(hr));
             return false;
         }
+        if (fc <= 3 || (fc % 250) == 0)
+            LOG_INFO("decoder: fed AU #%llu (%s hr=0x%lX)", fc,
+                     hr == MF_E_NOTACCEPTING ? "not-accepting"
+                                              : "accepted",
+                     static_cast<unsigned long>(hr));
     }
 
     // 2) Drain outputs until the decoder needs more input.

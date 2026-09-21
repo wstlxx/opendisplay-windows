@@ -144,6 +144,8 @@ private:
     std::atomic<uint64_t> framesDecoded_{0};
     std::atomic<uint64_t> rebuilds_{0};
     std::atomic<uint64_t> decoderErrors_{0};
+    std::atomic<uint64_t> fedCount_{0};
+    std::atomic<uint64_t> publishedFrames_{0};
 };
 
 } // namespace od::video
