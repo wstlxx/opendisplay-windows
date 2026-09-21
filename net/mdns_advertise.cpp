@@ -241,8 +241,14 @@ void MdnsAdvertiser::SendAnnouncement(const std::vector<uint8_t>& pkt) {
     group.sin_family = AF_INET;
     group.sin_port = htons(kMulticastPort);
     inet_pton(AF_INET, kMulticastGroup, &group.sin_addr);
-    sendto(sock_, reinterpret_cast<const char*>(pkt.data()), int(pkt.size()), 0,
-           reinterpret_cast<sockaddr*>(&group), sizeof(group));
+    int sent = sendto(sock_, reinterpret_cast<const char*>(pkt.data()),
+                      int(pkt.size()), 0, reinterpret_cast<sockaddr*>(&group),
+                      sizeof(group));
+    if (sendCount_ < 3)  // confirm the sends aren't erroring (worker thread only)
+        LOG_INFO("mdns: sendto #%d -> %s:%u sent=%d err=%d", sendCount_ + 1,
+                 kMulticastGroup, unsigned(kMulticastPort), sent,
+                 sent < 0 ? WSAGetLastError() : 0);
+    ++sendCount_;
 }
 
 void MdnsAdvertiser::ThreadMain() {
@@ -269,11 +275,22 @@ void MdnsAdvertiser::ThreadMain() {
             if (r < 0) break;
             if (r > 0 && FD_ISSET(sock_, &rs)) {
                 uint8_t buf[2048];
-                int n = recv(sock_, reinterpret_cast<char*>(buf), sizeof(buf), 0);
+                sockaddr_in from{};
+                int fromlen = sizeof(from);
+                int n = recvfrom(sock_, reinterpret_cast<char*>(buf), sizeof(buf), 0,
+                                 reinterpret_cast<sockaddr*>(&from), &fromlen);
                 if (n > 0) {
                     std::string_view sv(reinterpret_cast<const char*>(buf),
                                         size_t(n));
                     if (sv.find(marker) != std::string_view::npos) {
+                        if (queryCount_ < 5) {
+                            char ip[INET_ADDRSTRLEN] = {};
+                            inet_ntop(AF_INET, &from.sin_addr, ip,
+                                      sizeof(ip));
+                            LOG_INFO("mdns: query from %s:%u -> responding",
+                                     ip, unsigned(ntohs(from.sin_port)));
+                        }
+                        ++queryCount_;
                         SendAnnouncement(announcement_);
                         last = clock::now();
                     }

@@ -63,6 +63,8 @@ private:
     bool canReceive_ = false;
     std::atomic<bool> running_{false};
     std::thread thread_;
+    int sendCount_ = 0;   // worker-thread only; rate-limited diagnostics
+    int queryCount_ = 0;  // worker-thread only; rate-limited diagnostics
 };
 
 }  // namespace od::net
