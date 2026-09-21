@@ -330,7 +330,7 @@ void Renderer::Present(const video::DecodedFrame* frame) {
     vp.Height = (float)clientH_;
     vp.MinDepth = 0.0f;
     vp.MaxDepth = 1.0f;
-    ctx_->IASetViewports(1, &vp);
+    ctx_->RSSetViewports(1, &vp);
 
     ctx_->ClearRenderTargetView(rtv_.Get(), clear);
 
