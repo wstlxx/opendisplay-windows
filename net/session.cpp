@@ -12,6 +12,13 @@ int64_t SteadyNowMs() {
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
+// PROTOCOL.md 8.1: ping t is wall-clock ms since the Unix epoch (the sender
+// uses it for clock sync). Steady time would make RTT computation overflow.
+int64_t UnixNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
 } // namespace
 
 Session::Session(SOCKET sock, std::string peer, Callbacks cb)
@@ -85,7 +92,7 @@ void Session::SendHello(int pixelsWide, int pixelsHigh, double scale,
     SendControl(od::BuildHello(info));
 }
 
-void Session::SendPing() { SendControl(od::BuildPing(SteadyNowMs())); }
+void Session::SendPing() { SendControl(od::BuildPing(UnixNowMs())); }
 void Session::SendKeyframeRequest() { SendControl(od::BuildKeyframeRequest()); }
 void Session::SendClosing() { SendControl(od::BuildClosing()); }
 
@@ -106,6 +113,12 @@ void Session::ReadLoop() {
             const int n =
                 ::recv(sock_, reinterpret_cast<char*>(buf.data()),
                        static_cast<int>(buf.size()), 0);
+            // Capture the socket error IMMEDIATELY: any Winsock call made
+            // before this (e.g. the SendPing below, once 2 s have passed)
+            // clears the thread's last-error, which turned benign
+            // SO_RCVTIMEO timeouts into bogus "recv failed: 0" and killed
+            // healthy connections whenever a stall coincided with a ping.
+            const int recvErr = (n < 0) ? WSAGetLastError() : 0;
 
             const int64_t now = SteadyNowMs();
             if (now - lastDataMs_ > kLivenessTimeoutMs) {
@@ -180,11 +193,12 @@ void Session::ReadLoop() {
                 reason = "peer closed (EOF)";
                 break;
             } else {
-                const int err = WSAGetLastError();
-                if (err == WSAETIMEDOUT || err == WSAEWOULDBLOCK) continue;
+                if (recvErr == WSAETIMEDOUT || recvErr == WSAEWOULDBLOCK)
+                    continue;
                 cleanClose = false;
                 reason = "recv failed";
-                LOG_WARN("session(%s): recv() failed: %d", peer_.c_str(), err);
+                LOG_WARN("session(%s): recv() failed: %d", peer_.c_str(),
+                         recvErr);
                 break;
             }
         }

@@ -77,8 +77,13 @@ bool H264Decoder::SetupMft() {
                                               CLSCTX_INPROC_SERVER,
                                               __uuidof(IMFTransform),
                                               reinterpret_cast<void**>(&mft));
+        const bool isHw = (clsid == &kClSIDHardwareH264);
         if (FAILED(cr) || !mft) {
             lastCr = cr;
+            if (isHw)
+                LOG_WARN("decoder: hardware H.264 MFT unavailable "
+                         "(CoCreateInstance hr=0x%lX)",
+                         static_cast<unsigned long>(cr));
             continue;
         }
         decoder_.Attach(mft);
@@ -88,9 +93,17 @@ bool H264Decoder::SetupMft() {
             continue;
         inputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
         inputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
-        if (FAILED(decoder_->SetInputType(0, inputType.Get(), 0)))
+        if (FAILED(decoder_->SetInputType(0, inputType.Get(), 0))) {
+            if (isHw)
+                LOG_WARN("decoder: hardware H.264 MFT rejected H264 input");
             continue;
-        if (!SetOutputNv12()) continue;
+        }
+        if (!SetOutputNv12()) {
+            if (isHw)
+                LOG_WARN("decoder: hardware H.264 MFT offered no NV12 "
+                         "output type");
+            continue;
+        }
 
         sampleSize_ = 0;
         mftReady_ = true;

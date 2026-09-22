@@ -225,8 +225,11 @@ void Renderer::Resize(int w, int h) {
     clientW_ = w;
     clientH_ = h;
     ctx_->Flush();
-    if (FAILED(swap_->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0))) {
-        LOG_WARN("renderer: ResizeBuffers failed");
+    const HRESULT rhr =
+        swap_->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0);
+    if (FAILED(rhr)) {
+        LOG_WARN("renderer: ResizeBuffers failed (0x%lX) -- will retry on "
+                 "next size change", static_cast<unsigned long>(rhr));
         return;
     }
     rtv_.Reset();

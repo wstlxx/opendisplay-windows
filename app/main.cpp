@@ -537,12 +537,31 @@ void App::HandleControl(net::Session* s, const ControlMessage& msg) {
             LOG_DEBUG(
                 "sender ping: drops=%d pending=%d capFps=%.1f",
                 msg.drops, msg.pending, msg.capFps);
+            // capFps is the SENDER's screen-capture rate. When it collapses
+            // the mirror shows a frame that gets older and older (perceived
+            // as "the delay grows"). That is a Mac-side stall, not a
+            // receiver problem -- say so loudly in the log.
+            if (msg.hasCapFps && msg.capFps > 0 && msg.capFps < 10) {
+                LOG_WARN("sender CAPTURE SLOW: capFps=%.1f (Mac capture/"
+                         "encode pipeline stalling -- frames freeze and "
+                         "apparent delay grows; check Mac CPU load, or lower "
+                         "the stream fps/quality in the OpenDisplay app)",
+                         msg.capFps);
+            }
             break;
         }
         case ControlType::Pong: {
             if (msg.hasT) {
-                lastRttMs = static_cast<int>(UnixNowMs() - msg.t);
-                LOG_DEBUG("pong: rtt=%d ms", lastRttMs);
+                // t is the Unix-ms we stamped on the ping; the difference is
+                // the RTT. Guard against clock jumps / stale pings.
+                const int64_t rtt = UnixNowMs() - static_cast<int64_t>(msg.t);
+                if (rtt >= 0 && rtt < 5000) {
+                    lastRttMs = static_cast<int>(rtt);
+                    LOG_DEBUG("pong: rtt=%d ms", lastRttMs);
+                } else {
+                    LOG_WARN("pong: implausible rtt %lld ms (clock skew?)",
+                             static_cast<long long>(rtt));
+                }
             }
             break;
         }
