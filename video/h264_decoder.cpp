@@ -192,26 +192,33 @@ bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb,
         if (FAILED(MFCreateSample(inSample.ReleaseAndGetAddressOf())))
             return false;
         inSample->AddBuffer(inBuf.Get());
-        const HRESULT hr = decoder_->ProcessInput(0, inSample.Get(), 0);
+        HRESULT hr = decoder_->ProcessInput(0, inSample.Get(), 0);
+        if (hr == MF_E_NOTACCEPTING) {
+            // The MFT still has output. Dropping this compressed AU would
+            // break the reference chain and can leave the displayed picture
+            // several actions behind until another IDR arrives.
+            if (!DrainOutput()) return false;
+            hr = decoder_->ProcessInput(0, inSample.Get(), 0);
+        }
         uint64_t fc = ++fedCount_;
-        if (FAILED(hr) && hr != MF_E_NOTACCEPTING) {
+        if (FAILED(hr)) {
             LOG_ERROR("decoder: ProcessInput failed: 0x%lX",
                       static_cast<unsigned long>(hr));
             return false;
         }
-        if (SUCCEEDED(hr)) {
-            // Push for EVERY accepted AU (even captureMs<0) so the FIFO
-            // stays aligned with the published frames.
-            captureTimes_.push_back({captureMs, arrivalMs});
-        }
+        // Push for EVERY accepted AU (even captureMs<0) so the FIFO
+        // stays aligned with the published frames.
+        captureTimes_.push_back({captureMs, arrivalMs});
         if (fc <= 3 || (fc % 250) == 0)
-            LOG_INFO("decoder: fed AU #%llu (%s hr=0x%lX)", fc,
-                     hr == MF_E_NOTACCEPTING ? "not-accepting"
-                                              : "accepted",
+            LOG_INFO("decoder: fed AU #%llu (accepted hr=0x%lX)", fc,
                      static_cast<unsigned long>(hr));
     }
 
     // 2) Drain outputs until the decoder needs more input.
+    return DrainOutput();
+}
+
+bool H264Decoder::DrainOutput() {
     for (;;) {
         Microsoft::WRL::ComPtr<IMFSample> outSample;
         if (FAILED(MFCreateSample(outSample.ReleaseAndGetAddressOf()))) break;
@@ -228,7 +235,10 @@ bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb,
         const HRESULT hr = decoder_->ProcessOutput(0, 1, &ob, &status);
         if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) break;
         if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
-            SetOutputNv12();
+            if (!SetOutputNv12()) {
+                LOG_ERROR("decoder: could not select NV12 after stream change");
+                return false;
+            }
             Microsoft::WRL::ComPtr<IMFMediaType> type;
             if (SUCCEEDED(decoder_->GetOutputCurrentType(
                     0, type.ReleaseAndGetAddressOf()))) {

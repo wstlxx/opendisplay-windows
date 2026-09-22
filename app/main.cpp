@@ -3,11 +3,10 @@
 // Wiring (see docs/RESEARCH.md for the architecture):
 //
 //   net read thread (per session)
-//     -> VideoQueue (<=4, drop-oldest)
+//     -> VideoQueue (<=2, drop-oldest)
 //   decode thread
-//     -> H264Decoder (MF byte stream + source reader)
-//   MF reader thread
-//     -> onFrame: publish latest DecodedFrame (D3D texture)
+//     -> H264Decoder (Media Foundation H.264 transform)
+//     -> onFrame: publish latest DecodedFrame (CPU NV12)
 //   main thread (Win32 message loop)
 //     -> Renderer::Present(latest)
 //
@@ -122,7 +121,14 @@ struct App {
     // Latest decoded frame (published by the MF reader thread)
     std::mutex frameMutex;
     std::shared_ptr<video::DecodedFrame> latestFrame;
+    std::shared_ptr<video::DecodedFrame> lastPresentedFrame;
     HANDLE frameEvent = nullptr;
+    bool redrawNeeded = true;  // window size changed or first draw
+    std::atomic<uint64_t> receivedVideo_{0};
+    std::atomic<int64_t> lastVideoArrivalMs_{0};
+    // The current Mac sender stamps `cap` when submitting to VideoToolbox,
+    // so this measures encode submission to send, not ScreenCaptureKit age.
+    std::atomic<int64_t> lastSenderEncodeMs_{-1};
 
     // Network
     net::TcpListener listener;
@@ -147,6 +153,11 @@ struct App {
     int lastRttMs = -1;
     int lastE2eMs = -1;   // clock-based e2e (may include Mac/PC clock skew)
     int lastR2pMs = -1;   // recv->present, skew-free (our clock only)
+    int64_t lastFramePresentedMs_ = 0;
+    int64_t lastPipelineLogMs_ = 0;
+    uint64_t lastReceivedLogged_ = 0;
+    uint64_t lastSubmittedLogged_ = 0;
+    uint64_t lastPublishedLogged_ = 0;
     bool skewWarned_ = false;
     long presentN_ = 0;   // frames presented since start (for rate-limited logs)
 
@@ -165,8 +176,6 @@ struct App {
     // Stream desync recovery: a lost frame means the P-frames after it
     // decode as garbage (ghosting, wrong colors) until an IDR arrives.
     int64_t lastKfSendMs_ = 0;      // rate limit for kf requests
-    int64_t lastVideoCaptureMs_ = 0;  // sender capture clock of last sample
-
     // Run control
     bool running = false;
 
@@ -220,10 +229,14 @@ LRESULT App::WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp) {
                 const int w = LOWORD(lp), h = HIWORD(lp);
                 if (w > 0 && h > 0) {
                     renderer.Resize(w, h);
+                    redrawNeeded = true;
                     resizeAtMs = SteadyNowMs(); // debounced hello
                 }
             }
             return 0;
+        case WM_PAINT:
+            redrawNeeded = true;
+            return DefWindowProc(whnd, msg, wp, lp);
         case WM_KEYDOWN:
             switch (wp) {
                 case VK_F1: ToggleFullscreen(); return 0;
@@ -506,20 +519,13 @@ void App::OnAccept(SOCKET sock, const std::string& peer) {
         if (auto sp = self->lock()) HandleControl(sp.get(), m);
     };
     cbs.onVideo = [this](net::VideoSample&& v) {
-        // A jump in the sender's capture clock is, on its own, NOT proof of
-        // frame loss: a slow/overloaded Mac naturally has large gaps in its
-        // capture timestamps. Treating every >100ms gap as desync made us
-        // demand an IDR ~1x/sec, and each 720p IDR is a huge encode that a
-        // struggling Mac cannot afford -> it slows further -> more gaps ->
-        // more requests: a destructive feedback loop (measured in the field:
-        // capFps 0-12 vs 60 target, recv->present growing). Only a very large
-        // gap (>=1s, a healthy 60fps sender never has one) is treated as real
-        // loss, and that at a relaxed rate (2s) so a slow Mac is not pounded.
-        if (v.captureMs > 0 && lastVideoCaptureMs_ > 0 &&
-            v.captureMs - lastVideoCaptureMs_ >= 1000) {
-            MaybeRequestKeyframe("capture-time gap (real loss)", 2000);
-        }
-        if (v.captureMs > 0) lastVideoCaptureMs_ = v.captureMs;
+        // Sparse captures are normal when the Mac is idle or overloaded.
+        // A capture timestamp gap cannot establish H.264 reference loss.
+        receivedVideo_.fetch_add(1, std::memory_order_relaxed);
+        lastVideoArrivalMs_.store(v.arrivalMs, std::memory_order_relaxed);
+        if (v.captureMs > 0 && v.sendMs >= v.captureMs)
+            lastSenderEncodeMs_.store(v.sendMs - v.captureMs,
+                                      std::memory_order_relaxed);
         if (queue.Push(std::move(v))) {
             // We dropped a frame -> the decoder's reference chain is broken;
             // without an IDR the picture stays corrupted (ghosting, wrong
@@ -551,7 +557,6 @@ void App::OnAccept(SOCKET sock, const std::string& peer) {
         std::lock_guard lock(sessionMutex);
         session = s;
     }
-    lastVideoCaptureMs_ = 0;  // fresh connection: no gap baseline yet
     s->Start();
     // hello MUST be the first message we send (PROTOCOL.md 6.1).
     RECT cr{};
@@ -587,17 +592,9 @@ void App::HandleControl(net::Session* s, const ControlMessage& msg) {
             LOG_DEBUG(
                 "sender ping: drops=%d pending=%d capFps=%.1f",
                 msg.drops, msg.pending, msg.capFps);
-            // capFps is the SENDER's screen-capture rate. When it collapses
-            // the mirror shows a frame that gets older and older (perceived
-            // as "the delay grows"). That is a Mac-side stall, not a
-            // receiver problem -- say so loudly in the log.
-            if (msg.hasCapFps && msg.capFps > 0 && msg.capFps < 10) {
-                LOG_WARN("sender CAPTURE SLOW: capFps=%.1f (Mac capture/"
-                         "encode pipeline stalling -- frames freeze and "
-                         "apparent delay grows; check Mac CPU load, or lower "
-                         "the stream fps/quality in the OpenDisplay app)",
-                         msg.capFps);
-            }
+            // Low capFps alone is ambiguous: ScreenCaptureKit may produce
+            // few frames for a static desktop. Use the pipeline counters
+            // and the actual on-screen freshness to diagnose a stall.
             break;
         }
         case ControlType::Pong: {
@@ -698,7 +695,7 @@ void App::Run() {
     MSG msg;
     while (running) {
         const HANDLE waitables[1] = {frameEvent};
-        MsgWaitForMultipleObjectsEx(1, waitables, 16, QS_ALLINPUT,
+        MsgWaitForMultipleObjectsEx(1, waitables, 100, QS_ALLINPUT,
                                    MWMO_ALERTABLE);
         BOOL pm;
         while ((pm = PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) != 0) {
@@ -712,12 +709,46 @@ void App::Run() {
         if (!running) break;
         ReapEndedSession();
         MaybeSendHello();
+        const int64_t now = SteadyNowMs();
+        if (now - lastPipelineLogMs_ >= 5000) {
+            const uint64_t received = receivedVideo_.load(std::memory_order_relaxed);
+            const uint64_t submitted = decoder->SamplesSubmitted();
+            const uint64_t published = decoder->FramesPublished();
+            const int64_t arrival = lastVideoArrivalMs_.load(std::memory_order_relaxed);
+            const int64_t senderEncode =
+                lastSenderEncodeMs_.load(std::memory_order_relaxed);
+            LOG_INFO("pipeline/5s: recv=%llu submit=%llu publish=%llu "
+                     "queue=%zu dropped=%llu sender-encode-to-send=%lldms "
+                     "last-input-age=%lldms "
+                     "last-new-frame-age=%lldms last-recv-to-present=%dms",
+                     (unsigned long long)(received - lastReceivedLogged_),
+                     (unsigned long long)(submitted - lastSubmittedLogged_),
+                     (unsigned long long)(published - lastPublishedLogged_),
+                     queue.Size(), (unsigned long long)queue.Dropped(),
+                     (long long)senderEncode,
+                     (long long)(arrival > 0 ? now - arrival : -1),
+                     (long long)(lastFramePresentedMs_ > 0
+                                     ? now - lastFramePresentedMs_ : -1),
+                     lastR2pMs);
+            lastPipelineLogMs_ = now;
+            lastReceivedLogged_ = received;
+            lastSubmittedLogged_ = submitted;
+            lastPublishedLogged_ = published;
+        }
         std::shared_ptr<video::DecodedFrame> latest;
         {
             std::lock_guard lock(frameMutex);
             latest = latestFrame;
         }
+        // The loop also wakes for Win32 messages and the housekeeping
+        // timeout. Neither requires uploading and presenting the same NV12
+        // picture again. In particular, an idle sender may send no frames.
+        const bool newFrame = latest != lastPresentedFrame;
+        if (!redrawNeeded && !newFrame) continue;
+        redrawNeeded = false;
         renderer.Present(latest.get());
+        lastPresentedFrame = latest;
+        if (latest && newFrame) lastFramePresentedMs_ = SteadyNowMs();
 
         // Latency, two measurements:
         //  - recv->present (skew-free, OUR clock only): socket arrival to
@@ -725,10 +756,11 @@ void App::Run() {
         //  - clock e2e (crosses machines): sender capture time -> our
         //    present. Meaningful only when Mac and PC clocks are synced;
         //    otherwise it carries a constant clock-skew offset.
-        if (latest) {
+        if (latest && newFrame) {
             if (latest->arrivalMs > 0) {
                 const int64_t r2p = SteadyNowMs() - latest->arrivalMs;
-                if (r2p > 0 && r2p < 10000) lastR2pMs = static_cast<int>(r2p);
+                if (r2p >= 0 && r2p < 600000)
+                    lastR2pMs = static_cast<int>(r2p);
             }
             if (latest->captureMs > 0 && lastRttMs >= 0) {
                 const int64_t e2e =

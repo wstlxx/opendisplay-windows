@@ -128,6 +128,7 @@ public:
     // Diagnostics (touched from more than one thread; lock-free).
     uint64_t SamplesSubmitted() const { return samplesSubmitted_.load(); }
     uint64_t FramesDecoded() const { return framesDecoded_.load(); }
+    uint64_t FramesPublished() const { return publishedFrames_.load(); }
     uint64_t Rebuilds() const { return rebuilds_.load(); }
     uint64_t DecoderErrors() const { return decoderErrors_.load(); }
 
@@ -137,6 +138,7 @@ private:
     bool SetOutputNv12();
     bool FeedAccessUnit(const std::vector<uint8_t>& annexb, int64_t captureMs,
                         int64_t arrivalMs);
+    bool DrainOutput();
     void PublishNv12(IMFSample* outSample);
     void ResetMft();
     void RequestKeyframe();
