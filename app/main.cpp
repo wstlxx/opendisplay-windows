@@ -61,6 +61,13 @@ int64_t SteadyNowMs() {
         .count();
 }
 
+// Mouse message coordinates are signed 16-bit values packed into the low /
+// high halves of lParam (what GET_X_LPARAM/GET_Y_LPARAM in windowsx.h do; we
+// avoid pulling that header in). Sign-extend so points left/above the client
+// origin come back negative.
+inline int MouseX(LPARAM lp) { return (short)LOWORD(lp); }
+inline int MouseY(LPARAM lp) { return (short)HIWORD(lp); }
+
 // Defined below; needed here so the id can be persisted next to the exe.
 std::string ExeDir();
 
@@ -238,7 +245,7 @@ LRESULT App::WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetCapture(whnd); // keep receiving mouse-up outside the window
             {
                 double nx, ny;
-                if (WindowToVideo(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &nx, &ny)) {
+                if (WindowToVideo(MouseX(lp), MouseY(lp), &nx, &ny)) {
                     lastTouchX = nx;
                     lastTouchY = ny;
                     SendTouch("began", nx, ny);
@@ -250,7 +257,7 @@ LRESULT App::WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp) {
                 mouseDown = false;
                 if (GetCapture() == whnd) ReleaseCapture();
                 double nx, ny;
-                if (WindowToVideo(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &nx, &ny)) {
+                if (WindowToVideo(MouseX(lp), MouseY(lp), &nx, &ny)) {
                     lastTouchX = nx;
                     lastTouchY = ny;
                 }
@@ -259,7 +266,7 @@ LRESULT App::WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_MOUSEMOVE: {
             double nx, ny;
-            if (WindowToVideo(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &nx, &ny)) {
+            if (WindowToVideo(MouseX(lp), MouseY(lp), &nx, &ny)) {
                 lastTouchX = nx;
                 lastTouchY = ny;
                 if (mouseDown) SendTouch("moved", nx, ny);
