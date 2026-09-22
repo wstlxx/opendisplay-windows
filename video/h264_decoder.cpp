@@ -135,6 +135,15 @@ void H264Decoder::PublishNv12(IMFSample* outSample) {
     if (!captureTimes_.empty()) {
         frame->captureMs = captureTimes_.front();
         captureTimes_.pop_front();
+        if (captureTimes_.size() > 64) {
+            // The MFT emitted fewer frames than it accepted (e.g. it
+            // swallowed corrupted P-frames) -> the FIFO has drifted and
+            // captureMs no longer matches the emitted frame. Reset the
+            // e2e baseline rather than report a fake 20-second latency.
+            LOG_WARN("decoder: capture-time drift (emitted < accepted "
+                     "frames) -- resetting e2e baseline");
+            captureTimes_.clear();
+        }
     }
     if (frame->width > 0 && frame->height > 0) {
         // Copy the decoded NV12 into the frame (CPU only). The D3D11 upload is

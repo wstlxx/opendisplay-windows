@@ -158,6 +158,12 @@ struct App {
     // Mac app does not inject keys, so keyboard is not forwarded.)
     bool mouseDown = false;
     double lastTouchX = 0.0, lastTouchY = 0.0;
+    int64_t lastTouchSentMs_ = 0;  // touch-moved throttle (~120 Hz max)
+
+    // Stream desync recovery: a lost frame means the P-frames after it
+    // decode as garbage (ghosting, wrong colors) until an IDR arrives.
+    int64_t lastKfSendMs_ = 0;      // rate limit for kf requests
+    int64_t lastVideoCaptureMs_ = 0;  // sender capture clock of last sample
 
     // Run control
     bool running = false;
@@ -181,6 +187,8 @@ struct App {
     // Window client pixel -> normalized video coords (0..1, top-left origin).
     bool WindowToVideo(int px, int py, double* nx, double* ny) const;
     void SendTouch(const char* phase, double x, double y);
+    // Rate-limited (500 ms) keyframe request for stream desync recovery.
+    void MaybeRequestKeyframe(const char* why);
 
     static LRESULT CALLBACK WndProcStatic(HWND h, UINT msg, WPARAM wp,
                                           LPARAM lp);
@@ -273,7 +281,16 @@ LRESULT App::WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (WindowToVideo(MouseX(lp), MouseY(lp), &nx, &ny)) {
                 lastTouchX = nx;
                 lastTouchY = ny;
-                if (mouseDown) SendTouch("moved", nx, ny);
+                if (mouseDown) {
+                    // Throttle to ~120 Hz. WM_MOUSEMOVE fires at hundreds of
+                    // Hz; forwarding every one would flood the Mac's Window
+                    // Server with synthetic mouse-moved CGEvents (far more
+                    // than a real mouse produces) and can starve its screen
+                    // capture -- observed as capFps collapsing to 0.
+                    if (SteadyNowMs() - lastTouchSentMs_ >= 8) {
+                        SendTouch("moved", nx, ny);
+                    }
+                }
             }
             return 0;
         }
@@ -308,8 +325,18 @@ bool App::WindowToVideo(int px, int py, double* nx, double* ny) const {
 }
 
 void App::SendTouch(const char* phase, double x, double y) {
+    lastTouchSentMs_ = SteadyNowMs();
     std::lock_guard lock(sessionMutex);
     if (session) session->SendControl(od::BuildTouch(phase, x, y));
+}
+
+void App::MaybeRequestKeyframe(const char* why) {
+    const int64_t now = SteadyNowMs();
+    if (now - lastKfSendMs_ < 500) return;  // rate limit
+    lastKfSendMs_ = now;
+    LOG_WARN("main: %s -> requesting keyframe (desync recovery)", why);
+    std::lock_guard lock(sessionMutex);
+    if (session) session->SendKeyframeRequest();
 }
 
 bool App::Setup(int port) {
@@ -477,8 +504,19 @@ void App::OnAccept(SOCKET sock, const std::string& peer) {
         if (auto sp = self->lock()) HandleControl(sp.get(), m);
     };
     cbs.onVideo = [this](net::VideoSample&& v) {
+        // Gap detection: a big jump in the sender's capture clock means
+        // frames were lost (sender-side drop or in transit) -> desync.
+        if (v.captureMs > 0 && lastVideoCaptureMs_ > 0 &&
+            v.captureMs - lastVideoCaptureMs_ > 100) {
+            MaybeRequestKeyframe("capture-time gap (lost frames)");
+        }
+        if (v.captureMs > 0) lastVideoCaptureMs_ = v.captureMs;
         if (queue.Push(std::move(v))) {
-            // Drop-oldest happened; log at most every 128 drops.
+            // We dropped a frame -> the decoder's reference chain is broken;
+            // without an IDR the picture stays corrupted (ghosting, wrong
+            // colors). Ask for one (rate-limited).
+            MaybeRequestKeyframe("queue drop");
+            // Log at most every 128 drops.
             if ((queue.Dropped() & 127) == 1) {
                 LOG_WARN("video queue full, dropped %llu frames so far",
                          (unsigned long long)queue.Dropped());
@@ -502,6 +540,7 @@ void App::OnAccept(SOCKET sock, const std::string& peer) {
         std::lock_guard lock(sessionMutex);
         session = s;
     }
+    lastVideoCaptureMs_ = 0;  // fresh connection: no gap baseline yet
     s->Start();
     // hello MUST be the first message we send (PROTOCOL.md 6.1).
     RECT cr{};
