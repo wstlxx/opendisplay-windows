@@ -26,7 +26,7 @@ static const CLSID kClSIDHardwareH264 = CLSID_CMSH264DecoderMFT;
 using MfSetOutputCurrentTimeFn = HRESULT(WINAPI*)(IMFTransform*, GUID,
                                                   LONGLONG);
 static MfSetOutputCurrentTimeFn MfPaceFn() {
-    static MfSetOutputCurrentTimeFn fn = [] {
+    static MfSetOutputCurrentTimeFn fn = []() -> MfSetOutputCurrentTimeFn {
         for (const wchar_t* dllName : {L"mfplat.dll", L"mf.dll"}) {
             HMODULE mod = GetModuleHandleW(dllName);  // MF already loaded
             if (!mod) {
