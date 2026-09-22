@@ -32,6 +32,7 @@ void H264Decoder::ResetMft() {
     mftReady_ = false;
     sampleSize_ = 0;
     captureTimes_.clear();
+    nextMediaTime_ = 0;
 }
 
 void H264Decoder::RequestKeyframe() {
@@ -188,10 +189,20 @@ bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb,
         inBuf->SetCurrentLength((DWORD)annexb.size());
         inBuf->Unlock();
 
+        // Media-time pacing. The H.264 decoder MFT releases decoded frames
+        // only up to its idea of "now" (SetOutputCurrentTime). A standalone
+        // app that never advances it gets a constant multi-second internal
+        // hold (measured ~2.5 s in the field: every frame arrived seconds
+        // before it was published). Stamp each input with a synthetic
+        // monotonic 60fps media time and pin "now" to the latest fed frame
+        // so the MFT releases everything it has decoded immediately.
+        nextMediaTime_ += 10000000 / 60;  // 16.67 ms in 100-ns units
+
         Microsoft::WRL::ComPtr<IMFSample> inSample;
         if (FAILED(MFCreateSample(inSample.ReleaseAndGetAddressOf())))
             return false;
         inSample->AddBuffer(inBuf.Get());
+        inSample->SetUINT64(MF_MT_SAMPLE_TIME, nextMediaTime_);
         const HRESULT hr = decoder_->ProcessInput(0, inSample.Get(), 0);
         uint64_t fc = ++fedCount_;
         if (FAILED(hr) && hr != MF_E_NOTACCEPTING) {
@@ -199,8 +210,13 @@ bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb,
                       static_cast<unsigned long>(hr));
             return false;
         }
-        if (SUCCEEDED(hr) && captureMs > 0)
+        if (SUCCEEDED(hr)) {
+            MFSetOutputCurrentTime(decoder_.Get(), GUID_NULL,
+                                   static_cast<LONGLONG>(nextMediaTime_));
+            // Push for EVERY accepted AU (even captureMs<0) so the FIFO
+            // stays aligned with the published frames.
             captureTimes_.push_back({captureMs, arrivalMs});
+        }
         if (fc <= 3 || (fc % 250) == 0)
             LOG_INFO("decoder: fed AU #%llu (%s hr=0x%lX)", fc,
                      hr == MF_E_NOTACCEPTING ? "not-accepting"
