@@ -26,6 +26,10 @@ public:
     void Resize(int w, int h);
     // Draw the frame (or just the background) and present. Main thread only.
     void Present(const video::DecodedFrame* frame);
+    // Letterboxed display rect of the last presented frame, in window client
+    // pixels (for mapping window input to video coordinates). False if no
+    // frame has been presented yet. Main thread only.
+    bool VideoRect(int* outX, int* outY, int* outW, int* outH) const;
     ID3D11Device* Device() const { return device_.Get(); }
     ID3D11DeviceContext* Context() const { return ctx_.Get(); }
 
@@ -62,6 +66,7 @@ private:
     HWND swapHwnd_ = nullptr;
     int clientW_ = 0;
     int clientH_ = 0;
+    int lastVideoW_ = 0, lastVideoH_ = 0;  // set by Present, main thread
 };
 
 } // namespace od::render

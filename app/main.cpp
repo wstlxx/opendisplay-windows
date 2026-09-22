@@ -22,6 +22,7 @@
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -140,6 +141,13 @@ struct App {
     bool fullscreen = false;
     RECT restoreRect{};
 
+    // Mouse -> touch input (PROTOCOL.md 6.1): the Mac sender maps touch
+    // began/moved/ended onto real left-button mouse down/drag/up, and scroll
+    // onto the scroll wheel. (The protocol has no keyboard messages and the
+    // Mac app does not inject keys, so keyboard is not forwarded.)
+    bool mouseDown = false;
+    double lastTouchX = 0.0, lastTouchY = 0.0;
+
     // Run control
     bool running = false;
 
@@ -158,6 +166,10 @@ struct App {
     // during CreateWindowEx, when the App::hwnd member is still null)
     LRESULT WndProcThunk(HWND whnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp);
+
+    // Window client pixel -> normalized video coords (0..1, top-left origin).
+    bool WindowToVideo(int px, int py, double* nx, double* ny) const;
+    void SendTouch(const char* phase, double x, double y);
 
     static LRESULT CALLBACK WndProcStatic(HWND h, UINT msg, WPARAM wp,
                                           LPARAM lp);
@@ -220,8 +232,73 @@ LRESULT App::WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        case WM_LBUTTONDOWN:
+            if (mouseDown) return 0;
+            mouseDown = true;
+            SetCapture(whnd); // keep receiving mouse-up outside the window
+            {
+                double nx, ny;
+                if (WindowToVideo(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &nx, &ny)) {
+                    lastTouchX = nx;
+                    lastTouchY = ny;
+                    SendTouch("began", nx, ny);
+                }
+            }
+            return 0;
+        case WM_LBUTTONUP:
+            if (mouseDown) {
+                mouseDown = false;
+                if (GetCapture() == whnd) ReleaseCapture();
+                double nx, ny;
+                if (WindowToVideo(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &nx, &ny)) {
+                    lastTouchX = nx;
+                    lastTouchY = ny;
+                }
+                SendTouch("ended", lastTouchX, lastTouchY);
+            }
+            return 0;
+        case WM_MOUSEMOVE: {
+            double nx, ny;
+            if (WindowToVideo(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &nx, &ny)) {
+                lastTouchX = nx;
+                lastTouchY = ny;
+                if (mouseDown) SendTouch("moved", nx, ny);
+            }
+            return 0;
+        }
+        case WM_MOUSEWHEEL: {
+            const int delta = (short)HIWORD(wp); // +/-120 per notch
+            if (delta != 0) {
+                // dx/dy in video pixels, natural-scrolling sign: wheel up
+                // (positive delta) scrolls the content down => positive dy.
+                std::lock_guard lock(sessionMutex);
+                if (session) session->SendControl(od::BuildScroll(0.0, delta));
+            }
+            return 0;
+        }
+        case WM_CAPTURECHANGED:
+            // Mouse-up happened outside the window: end the drag cleanly.
+            if (mouseDown) {
+                mouseDown = false;
+                SendTouch("cancelled", lastTouchX, lastTouchY);
+            }
+            return 0;
     }
     return DefWindowProc(whnd, msg, wp, lp);
+}
+
+bool App::WindowToVideo(int px, int py, double* nx, double* ny) const {
+    int rx = 0, ry = 0, rw = 0, rh = 0;
+    if (!renderer.VideoRect(&rx, &ry, &rw, &rh) || rw <= 0 || rh <= 0)
+        return false;
+    *nx = std::clamp((double)(px - rx) / rw, 0.0, 1.0);
+    *ny = std::clamp((double)(py - ry) / rh, 0.0, 1.0);
+    return true;
+}
+
+void App::SendTouch(const char* phase, double x, double y) {
+    std::lock_guard lock(sessionMutex);
+    if (session) session->SendControl(od::BuildTouch(phase, x, y));
 }
 
 bool App::Setup(int port) {

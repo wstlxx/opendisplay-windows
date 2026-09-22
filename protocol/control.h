@@ -39,6 +39,16 @@ std::string BuildPing(int64_t tMs);
 // ping). This builder is provided for simulators/tests that play sender.
 // Echoes the ping's t unchanged and adds mt = sender-clock now.
 std::string BuildPong(int64_t tMs, int64_t mtMs);
+// Mouse/touch input (PROTOCOL.md 6.1). phase is one of "began", "moved",
+// "ended", "cancelled"; x, y are normalized 0..1 in the video coordinate
+// space (top-left origin, x right, y down). The optional t (sender-clock
+// timestamp) is omitted until the clock offset is known -- senders MUST
+// tolerate its absence.
+std::string BuildTouch(const std::string& phase, double x, double y);
+// Two-finger scroll (PROTOCOL.md 6.1): dx, dy in VIDEO PIXELS, natural-
+// scrolling sign (finger down => dy positive => content moves down).
+std::string BuildScroll(double dx, double dy);
+
 inline std::string BuildKeyframeRequest() { return "{\"type\":\"kf\"}"; }
 inline std::string BuildClosing() { return "{\"type\":\"closing\"}"; }
 inline std::string BuildSleeping() { return "{\"type\":\"sleeping\"}"; }

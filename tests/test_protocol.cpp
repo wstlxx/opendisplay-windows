@@ -302,6 +302,18 @@ void TestControlOutgoing() {
 
     const auto ping = od::BuildPing(1760000000000LL);
     CHECK(ping == "{\"type\":\"ping\",\"t\":1760000000000}");
+
+    const auto touch = od::BuildTouch("began", 0.25, 0.75);
+    CHECK(touch.find("\"type\":\"touch\"") != std::string::npos);
+    CHECK(touch.find("\"phase\":\"began\"") != std::string::npos);
+    CHECK(touch.find("\"x\":0.25") != std::string::npos);
+    CHECK(touch.find("\"y\":0.75") != std::string::npos);
+    CHECK(od::IsControlJson(Bytes(touch)));
+
+    const auto scroll = od::BuildScroll(0.0, 120.0);
+    CHECK(scroll.find("\"type\":\"scroll\"") != std::string::npos);
+    CHECK(scroll.find("\"dy\":120") != std::string::npos);
+    CHECK(od::IsControlJson(Bytes(scroll)));
 }
 
 void TestControlIncoming() {

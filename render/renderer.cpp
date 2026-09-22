@@ -317,6 +317,21 @@ void Renderer::UploadNv12(const uint8_t* nv12, int w, int h) {
     ctx_->Unmap(uploadTex_.Get(), 0);
 }
 
+bool Renderer::VideoRect(int* outX, int* outY, int* outW, int* outH) const {
+    if (lastVideoW_ <= 0 || lastVideoH_ <= 0 || clientW_ <= 0 || clientH_ <= 0)
+        return false;
+    // Same letterbox math as Present().
+    const double scale =
+        std::min(double(clientW_) / lastVideoW_, double(clientH_) / lastVideoH_);
+    const double dw = lastVideoW_ * scale;
+    const double dh = lastVideoH_ * scale;
+    *outX = (int)((clientW_ - dw) / 2.0);
+    *outY = (int)((clientH_ - dh) / 2.0);
+    *outW = (int)dw;
+    *outH = (int)dh;
+    return true;
+}
+
 void Renderer::Present(const video::DecodedFrame* frame) {
     if (!swap_ || !ctx_ || !rtv_) return; // not (re)initialized yet
     const float clear[4] = {0.06f, 0.06f, 0.08f, 1.0f};
@@ -338,6 +353,8 @@ void Renderer::Present(const video::DecodedFrame* frame) {
     const long pn = ++presentN;
 
     if (frame && !frame->nv12.empty() && frame->width > 0 && frame->height > 0) {
+        lastVideoW_ = frame->width;
+        lastVideoH_ = frame->height;
         // Upload CPU NV12 into our persistent texture (this thread owns D3D).
         const bool up = EnsureUploadTexture(frame->width, frame->height);
         if (up)

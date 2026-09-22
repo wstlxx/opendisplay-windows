@@ -94,6 +94,16 @@ std::string BuildPong(int64_t tMs, int64_t mtMs) {
            ",\"mt\":" + std::to_string(mtMs) + "}";
 }
 
+std::string BuildTouch(const std::string& phase, double x, double y) {
+    return "{\"type\":\"touch\",\"phase\":\"" + phase + "\"," +
+           "\"x\":" + FormatNumber(x) + ",\"y\":" + FormatNumber(y) + "}";
+}
+
+std::string BuildScroll(double dx, double dy) {
+    return "{\"type\":\"scroll\",\"dx\":" + FormatNumber(dx) +
+           ",\"dy\":" + FormatNumber(dy) + "}";
+}
+
 std::string BuildStats(int fps, int mbps, int rttMs, int e2eP50Ms, int e2eP95Ms) {
     return "{\"type\":\"stats\",\"transport\":\"tcp\",\"fps\":" + std::to_string(fps) +
            ",\"mbps\":" + std::to_string(mbps) + ",\"rtt\":" + std::to_string(rttMs) +
