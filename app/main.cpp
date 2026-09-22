@@ -145,7 +145,9 @@ struct App {
     uint64_t lastBytesAtStats_ = 0;
     int64_t lastStatsAtMs = 0;
     int lastRttMs = -1;
-    int lastE2eMs = -1;   // latest measured end-to-end latency
+    int lastE2eMs = -1;   // clock-based e2e (may include Mac/PC clock skew)
+    int lastR2pMs = -1;   // recv->present, skew-free (our clock only)
+    bool skewWarned_ = false;
     long presentN_ = 0;   // frames presented since start (for rate-limited logs)
 
     // Fullscreen
@@ -708,17 +710,42 @@ void App::Run() {
         }
         renderer.Present(latest.get());
 
-        // End-to-end latency: sender capture time -> our present, corrected
-        // by half the RTT (rough clock-offset estimate). Roughly: how long
-        // after the Mac captured the pixels do they reach our window?
-        if (latest && latest->captureMs > 0 && lastRttMs >= 0) {
-            const int64_t e2e =
-                UnixNowMs() - latest->captureMs - lastRttMs / 2;
-            if (e2e > 0 && e2e < 60000) {
-                lastE2eMs = static_cast<int>(e2e);
-                if (++presentN_ % 250 == 0)
-                    LOG_INFO("latency: e2e ~ %d ms (rtt=%d ms)", lastE2eMs,
-                             lastRttMs);
+        // Latency, two measurements:
+        //  - recv->present (skew-free, OUR clock only): socket arrival to
+        //    window present. Bounded by queue + decode + upload + present.
+        //  - clock e2e (crosses machines): sender capture time -> our
+        //    present. Meaningful only when Mac and PC clocks are synced;
+        //    otherwise it carries a constant clock-skew offset.
+        if (latest) {
+            if (latest->arrivalMs > 0) {
+                const int64_t r2p = SteadyNowMs() - latest->arrivalMs;
+                if (r2p > 0 && r2p < 10000) lastR2pMs = static_cast<int>(r2p);
+            }
+            if (latest->captureMs > 0 && lastRttMs >= 0) {
+                const int64_t e2e =
+                    UnixNowMs() - latest->captureMs - lastRttMs / 2;
+                if (e2e > 0 && e2e < 60000) {
+                    lastE2eMs = static_cast<int>(e2e);
+                    // Our side is fast but the clocks disagree by seconds:
+                    // that offset is clock skew, not latency.
+                    if (lastR2pMs > 0 && lastR2pMs < 1000 &&
+                        lastE2eMs > 5000 && !skewWarned_) {
+                        skewWarned_ = true;
+                        LOG_WARN(
+                            "latency: clock e2e %d ms but recv->present %d "
+                            "ms -- Mac/PC clock skew ~%d ms suspected. "
+                            "Sync both clocks (PC: Settings > Time & date > "
+                            "Sync now) for a meaningful e2e; the real "
+                            "latency is close to the recv->present number",
+                            lastE2eMs, lastR2pMs, lastE2eMs - lastR2pMs);
+                    }
+                    if (++presentN_ % 250 == 0)
+                        LOG_INFO(
+                            "latency: recv->present ~ %d ms | clock e2e ~ %d "
+                            "ms (rtt=%d ms)%s",
+                            lastR2pMs, lastE2eMs, lastRttMs,
+                            skewWarned_ ? " [clocks skewed]" : "");
+                }
             }
         }
     }

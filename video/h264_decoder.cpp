@@ -133,7 +133,8 @@ void H264Decoder::PublishNv12(IMFSample* outSample) {
     }
 
     if (!captureTimes_.empty()) {
-        frame->captureMs = captureTimes_.front();
+        frame->captureMs = captureTimes_.front().first;
+        frame->arrivalMs = captureTimes_.front().second;
         captureTimes_.pop_front();
         if (captureTimes_.size() > 64) {
             // The MFT emitted fewer frames than it accepted (e.g. it
@@ -174,7 +175,7 @@ void H264Decoder::PublishNv12(IMFSample* outSample) {
 }
 
 bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb,
-                                 int64_t captureMs) {
+                                 int64_t captureMs, int64_t arrivalMs) {
     // 1) Feed the whole access unit as a single input sample.
     {
         Microsoft::WRL::ComPtr<IMFMediaBuffer> inBuf;
@@ -198,7 +199,8 @@ bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb,
                       static_cast<unsigned long>(hr));
             return false;
         }
-        if (SUCCEEDED(hr) && captureMs > 0) captureTimes_.push_back(captureMs);
+        if (SUCCEEDED(hr) && captureMs > 0)
+            captureTimes_.push_back({captureMs, arrivalMs});
         if (fc <= 3 || (fc % 250) == 0)
             LOG_INFO("decoder: fed AU #%llu (%s hr=0x%lX)", fc,
                      hr == MF_E_NOTACCEPTING ? "not-accepting"
@@ -288,7 +290,7 @@ void H264Decoder::Submit(net::VideoSample&& s) {
         }
     }
 
-    if (!FeedAccessUnit(s.annexb, s.captureMs)) {
+    if (!FeedAccessUnit(s.annexb, s.captureMs, s.arrivalMs)) {
         decoderErrors_++;
         ResetMft();
         RequestKeyframe();

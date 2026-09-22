@@ -30,6 +30,9 @@ struct VideoSample {
     std::vector<uint8_t> pps;
     int64_t captureMs = -1;
     int64_t sendMs = -1;
+    // Receiver-side arrival time (steady ms, OUR clock) -- set by the session
+    // read loop. Skew-free basis for arrival->present latency stats.
+    int64_t arrivalMs = 0;
     bool isKeyframe = false;
 };
 

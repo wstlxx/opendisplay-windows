@@ -92,6 +92,9 @@ struct DecodedFrame {
     // Sender-side capture time (wall-clock ms, SENDER's clock) from the
     // stream header; -1 when absent. Used for end-to-end latency stats.
     int64_t captureMs = -1;
+    // Receiver-side socket arrival time (steady ms, OUR clock); 0 when
+    // absent. Skew-free arrival->present latency stats.
+    int64_t arrivalMs = 0;
 };
 
 class H264Decoder {
@@ -132,7 +135,8 @@ private:
 #ifdef _WIN32
     bool SetupMft();
     bool SetOutputNv12();
-    bool FeedAccessUnit(const std::vector<uint8_t>& annexb, int64_t captureMs);
+    bool FeedAccessUnit(const std::vector<uint8_t>& annexb, int64_t captureMs,
+                        int64_t arrivalMs);
     void PublishNv12(IMFSample* outSample);
     void ResetMft();
     void RequestKeyframe();
@@ -150,7 +154,9 @@ private:
     bool hwDecoder_ = false;  // true when the hardware MFT is in use
     // Sender capture times in input order (no B-frames in the stream, so
     // input order == output order); decoded frames pop the front.
-    std::deque<int64_t> captureTimes_;
+    // (captureMs, arrivalMs) pairs, FIFO: pushed per accepted input AU, popped
+    // per published frame. Pairs each decoded frame with its wire timestamps.
+    std::deque<std::pair<int64_t, int64_t>> captureTimes_;
 #endif
 
     std::atomic<uint64_t> samplesSubmitted_{0};

@@ -187,7 +187,10 @@ void Session::ReadLoop() {
                         sample.annexb.insert(sample.annexb.end(), nalu.begin(),
                                              nalu.end());
                     }
-                    if (cb_.onVideo) cb_.onVideo(std::move(sample));
+                    if (cb_.onVideo) {
+                        sample.arrivalMs = SteadyNowMs();
+                        cb_.onVideo(std::move(sample));
+                    }
                 }
             } else if (n == 0) {
                 reason = "peer closed (EOF)";
