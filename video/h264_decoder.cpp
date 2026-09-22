@@ -190,19 +190,19 @@ bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb,
         inBuf->Unlock();
 
         // Media-time pacing. The H.264 decoder MFT releases decoded frames
-        // only up to its idea of "now" (SetOutputCurrentTime). A standalone
+        // only up to its idea of "now" (MFSetOutputCurrentTime). A standalone
         // app that never advances it gets a constant multi-second internal
         // hold (measured ~2.5 s in the field: every frame arrived seconds
-        // before it was published). Stamp each input with a synthetic
-        // monotonic 60fps media time and pin "now" to the latest fed frame
-        // so the MFT releases everything it has decoded immediately.
+        // before it was published). We advance "now" by one 60fps frame
+        // period after each accepted input; the MFT's own output timestamps
+        // grow no faster than that, so every pending frame is always
+        // releasable -> no internal hold.
         nextMediaTime_ += 10000000 / 60;  // 16.67 ms in 100-ns units
 
         Microsoft::WRL::ComPtr<IMFSample> inSample;
         if (FAILED(MFCreateSample(inSample.ReleaseAndGetAddressOf())))
             return false;
         inSample->AddBuffer(inBuf.Get());
-        inSample->SetUINT64(MF_MT_SAMPLE_TIME, nextMediaTime_);
         const HRESULT hr = decoder_->ProcessInput(0, inSample.Get(), 0);
         uint64_t fc = ++fedCount_;
         if (FAILED(hr) && hr != MF_E_NOTACCEPTING) {
