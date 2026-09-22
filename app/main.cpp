@@ -190,7 +190,7 @@ struct App {
     bool WindowToVideo(int px, int py, double* nx, double* ny) const;
     void SendTouch(const char* phase, double x, double y);
     // Rate-limited (500 ms) keyframe request for stream desync recovery.
-    void MaybeRequestKeyframe(const char* why);
+    void MaybeRequestKeyframe(const char* why, int64_t minIntervalMs);
 
     static LRESULT CALLBACK WndProcStatic(HWND h, UINT msg, WPARAM wp,
                                           LPARAM lp);
@@ -332,9 +332,9 @@ void App::SendTouch(const char* phase, double x, double y) {
     if (session) session->SendControl(od::BuildTouch(phase, x, y));
 }
 
-void App::MaybeRequestKeyframe(const char* why) {
+void App::MaybeRequestKeyframe(const char* why, int64_t minIntervalMs) {
     const int64_t now = SteadyNowMs();
-    if (now - lastKfSendMs_ < 500) return;  // rate limit
+    if (now - lastKfSendMs_ < minIntervalMs) return;  // rate limit
     lastKfSendMs_ = now;
     LOG_WARN("main: %s -> requesting keyframe (desync recovery)", why);
     std::lock_guard lock(sessionMutex);
@@ -506,18 +506,27 @@ void App::OnAccept(SOCKET sock, const std::string& peer) {
         if (auto sp = self->lock()) HandleControl(sp.get(), m);
     };
     cbs.onVideo = [this](net::VideoSample&& v) {
-        // Gap detection: a big jump in the sender's capture clock means
-        // frames were lost (sender-side drop or in transit) -> desync.
+        // A jump in the sender's capture clock is, on its own, NOT proof of
+        // frame loss: a slow/overloaded Mac naturally has large gaps in its
+        // capture timestamps. Treating every >100ms gap as desync made us
+        // demand an IDR ~1x/sec, and each 720p IDR is a huge encode that a
+        // struggling Mac cannot afford -> it slows further -> more gaps ->
+        // more requests: a destructive feedback loop (measured in the field:
+        // capFps 0-12 vs 60 target, recv->present growing). Only a very large
+        // gap (>=1s, a healthy 60fps sender never has one) is treated as real
+        // loss, and that at a relaxed rate (2s) so a slow Mac is not pounded.
         if (v.captureMs > 0 && lastVideoCaptureMs_ > 0 &&
-            v.captureMs - lastVideoCaptureMs_ > 100) {
-            MaybeRequestKeyframe("capture-time gap (lost frames)");
+            v.captureMs - lastVideoCaptureMs_ >= 1000) {
+            MaybeRequestKeyframe("capture-time gap (real loss)", 2000);
         }
         if (v.captureMs > 0) lastVideoCaptureMs_ = v.captureMs;
         if (queue.Push(std::move(v))) {
             // We dropped a frame -> the decoder's reference chain is broken;
             // without an IDR the picture stays corrupted (ghosting, wrong
-            // colors). Ask for one (rate-limited).
-            MaybeRequestKeyframe("queue drop");
+            // colors). This only happens when the Mac is FAST enough to
+            // overflow the queue (i.e. when an IDR is affordable), so it is
+            // kept responsive.
+            MaybeRequestKeyframe("queue drop", 500);
             // Log at most every 128 drops.
             if ((queue.Dropped() & 127) == 1) {
                 LOG_WARN("video queue full, dropped %llu frames so far",

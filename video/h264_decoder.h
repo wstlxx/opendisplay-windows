@@ -75,14 +75,6 @@ typedef struct MFT_OUTPUT_DATA_BUFFER {
     IMMediaEvent* pEvent;
 } MFT_OUTPUT_DATA_BUFFER;
 #endif
-
-// MFSetOutputCurrentTime: tells a video decoder MFT where "now" is in media
-// time. The H.264 decoder MFT PACES its output against this clock; when an
-// app never sets it (standalone MFT use, no media engine), the MFT holds
-// decoded frames and releases them on its own schedule -- a constant
-// multi-second latency (measured in the field). The reduced SDK on CI lacks
-// the declaration AND the import-lib symbol, so it is resolved at runtime
-// from the real mfplat.dll (see h264_decoder.cpp) and skipped if absent.
 #endif
 
 namespace od::video {
@@ -165,9 +157,6 @@ private:
     // (captureMs, arrivalMs) pairs, FIFO: pushed per accepted input AU, popped
     // per published frame. Pairs each decoded frame with its wire timestamps.
     std::deque<std::pair<int64_t, int64_t>> captureTimes_;
-    // Synthetic 60fps media timeline (100-ns units) stamped on every input
-    // sample and used to advance the MFT's output clock. Reset with the MFT.
-    uint64_t nextMediaTime_ = 0;
 #endif
 
     std::atomic<uint64_t> samplesSubmitted_{0};

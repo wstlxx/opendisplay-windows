@@ -19,31 +19,6 @@ static const CLSID kClSIDHardwareH264 = {
 static const CLSID kClSIDHardwareH264 = CLSID_CMSH264DecoderMFT;
 #endif
 
-// MFSetOutputCurrentTime resolved at runtime: the reduced SDK on CI is
-// missing both the header declaration and the import-lib export, but a real
-// Windows mfplat.dll (or mf.dll) exports it by name. If it is absent we
-// skip pacing control (graceful degradation to the stock MFT behavior).
-using MfSetOutputCurrentTimeFn = HRESULT(WINAPI*)(IMFTransform*, GUID,
-                                                  LONGLONG);
-static MfSetOutputCurrentTimeFn MfPaceFn() {
-    static MfSetOutputCurrentTimeFn fn = []() -> MfSetOutputCurrentTimeFn {
-        for (const wchar_t* dllName : {L"mfplat.dll", L"mf.dll"}) {
-            HMODULE mod = GetModuleHandleW(dllName);  // MF already loaded
-            if (!mod) {
-                mod = LoadLibraryExW(dllName, nullptr,
-                                     LOAD_LIBRARY_AS_IMAGE_RESOURCE);
-            }
-            if (!mod) continue;
-            auto p = reinterpret_cast<MfSetOutputCurrentTimeFn>(
-                GetProcAddress(reinterpret_cast<HINSTANCE>(mod),
-                               "MFSetOutputCurrentTime"));
-            if (p) return p;
-        }
-        return nullptr;
-    }();
-    return fn;
-}
-
 H264Decoder::H264Decoder(Config cfg) : cfg_(std::move(cfg)) {}
 
 H264Decoder::~H264Decoder() { Shutdown(); }
@@ -57,7 +32,6 @@ void H264Decoder::ResetMft() {
     mftReady_ = false;
     sampleSize_ = 0;
     captureTimes_.clear();
-    nextMediaTime_ = 0;
 }
 
 void H264Decoder::RequestKeyframe() {
@@ -214,16 +188,6 @@ bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb,
         inBuf->SetCurrentLength((DWORD)annexb.size());
         inBuf->Unlock();
 
-        // Media-time pacing. The H.264 decoder MFT releases decoded frames
-        // only up to its idea of "now" (MFSetOutputCurrentTime). A standalone
-        // app that never advances it gets a constant multi-second internal
-        // hold (measured ~2.5 s in the field: every frame arrived seconds
-        // before it was published). We advance "now" by one 60fps frame
-        // period after each accepted input; the MFT's own output timestamps
-        // grow no faster than that, so every pending frame is always
-        // releasable -> no internal hold.
-        nextMediaTime_ += 10000000 / 60;  // 16.67 ms in 100-ns units
-
         Microsoft::WRL::ComPtr<IMFSample> inSample;
         if (FAILED(MFCreateSample(inSample.ReleaseAndGetAddressOf())))
             return false;
@@ -236,13 +200,6 @@ bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb,
             return false;
         }
         if (SUCCEEDED(hr)) {
-            if (auto pace = MfPaceFn()) {
-                pace(decoder_.Get(), GUID_NULL,
-                     static_cast<LONGLONG>(nextMediaTime_));
-            } else if (fc <= 3) {
-                LOG_WARN("decoder: MFSetOutputCurrentTime not found in "
-                         "mfplat.dll -- MFT may pace output (high latency)");
-            }
             // Push for EVERY accepted AU (even captureMs<0) so the FIFO
             // stays aligned with the published frames.
             captureTimes_.push_back({captureMs, arrivalMs});
