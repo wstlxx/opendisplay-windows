@@ -19,6 +19,31 @@ static const CLSID kClSIDHardwareH264 = {
 static const CLSID kClSIDHardwareH264 = CLSID_CMSH264DecoderMFT;
 #endif
 
+// MFSetOutputCurrentTime resolved at runtime: the reduced SDK on CI is
+// missing both the header declaration and the import-lib export, but a real
+// Windows mfplat.dll (or mf.dll) exports it by name. If it is absent we
+// skip pacing control (graceful degradation to the stock MFT behavior).
+using MfSetOutputCurrentTimeFn = HRESULT(WINAPI*)(IMFTransform*, GUID,
+                                                  LONGLONG);
+static MfSetOutputCurrentTimeFn MfPaceFn() {
+    static MfSetOutputCurrentTimeFn fn = [] {
+        for (const wchar_t* dllName : {L"mfplat.dll", L"mf.dll"}) {
+            HMODULE mod = GetModuleHandleW(dllName);  // MF already loaded
+            if (!mod) {
+                mod = LoadLibraryExW(dllName, nullptr,
+                                     LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+            }
+            if (!mod) continue;
+            auto p = reinterpret_cast<MfSetOutputCurrentTimeFn>(
+                GetProcAddress(reinterpret_cast<HINSTANCE>(mod),
+                               "MFSetOutputCurrentTime"));
+            if (p) return p;
+        }
+        return nullptr;
+    }();
+    return fn;
+}
+
 H264Decoder::H264Decoder(Config cfg) : cfg_(std::move(cfg)) {}
 
 H264Decoder::~H264Decoder() { Shutdown(); }
@@ -211,8 +236,13 @@ bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb,
             return false;
         }
         if (SUCCEEDED(hr)) {
-            MFSetOutputCurrentTime(decoder_.Get(), GUID_NULL,
-                                   static_cast<LONGLONG>(nextMediaTime_));
+            if (auto pace = MfPaceFn()) {
+                pace(decoder_.Get(), GUID_NULL,
+                     static_cast<LONGLONG>(nextMediaTime_));
+            } else if (fc <= 3) {
+                LOG_WARN("decoder: MFSetOutputCurrentTime not found in "
+                         "mfplat.dll -- MFT may pace output (high latency)");
+            }
             // Push for EVERY accepted AU (even captureMs<0) so the FIFO
             // stays aligned with the published frames.
             captureTimes_.push_back({captureMs, arrivalMs});

@@ -76,16 +76,13 @@ typedef struct MFT_OUTPUT_DATA_BUFFER {
 } MFT_OUTPUT_DATA_BUFFER;
 #endif
 
-// MFSetOutputCurrentTime (mftransform.h, implemented in mfplat.lib): tells a
-// video decoder MFT where "now" is in media time. The H.264 decoder MFT
-// PACES its output against this clock; when an app never sets it (standalone
-// MFT use, no media engine), the MFT holds decoded frames and releases them
-// on its own schedule -- a constant multi-second latency (measured in the
-// field). Declared unconditionally: redeclaration is legal if the real header
-// also declares it, and the reduced SDK's partial headers may lack it.
-extern "C" HRESULT MFSetOutputCurrentTime(IMFTransform* pTransform,
-                                          GUID guidTargetStream,
-                                          LONGLONG llTime);
+// MFSetOutputCurrentTime: tells a video decoder MFT where "now" is in media
+// time. The H.264 decoder MFT PACES its output against this clock; when an
+// app never sets it (standalone MFT use, no media engine), the MFT holds
+// decoded frames and releases them on its own schedule -- a constant
+// multi-second latency (measured in the field). The reduced SDK on CI lacks
+// the declaration AND the import-lib symbol, so it is resolved at runtime
+// from the real mfplat.dll (see h264_decoder.cpp) and skipped if absent.
 #endif
 
 namespace od::video {
