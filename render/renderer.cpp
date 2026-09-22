@@ -410,7 +410,7 @@ void Renderer::Present(const video::DecodedFrame* frame) {
                  (const void*)frame, pn);
     }
 
-    swap_->Present(1, 0);
+    swap_->Present(vsync_ ? 1 : 0, 0);
 }
 
 } // namespace od::render

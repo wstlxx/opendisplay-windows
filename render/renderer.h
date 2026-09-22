@@ -26,6 +26,11 @@ public:
     void Resize(int w, int h);
     // Draw the frame (or just the background) and present. Main thread only.
     void Present(const video::DecodedFrame* frame);
+    // Wait for the display's vsync before Present. Off by default: for a
+    // screen mirror the lowest latency wins (each Present otherwise waits up
+    // to one refresh, adding up to a frame of latency + jitter). Pass true
+    // (e.g. --vsync) for tear-free output instead.
+    void SetVsync(bool on) { vsync_ = on; }
     // Letterboxed display rect of the last presented frame, in window client
     // pixels (for mapping window input to video coordinates). False if no
     // frame has been presented yet. Main thread only.
@@ -66,6 +71,7 @@ private:
     HWND swapHwnd_ = nullptr;
     int clientW_ = 0;
     int clientH_ = 0;
+    bool vsync_ = false;
     int lastVideoW_ = 0, lastVideoH_ = 0;  // set by Present, main thread
 };
 

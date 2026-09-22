@@ -135,6 +135,7 @@ struct App {
     std::string helloId = MakeStableHelloId();
     net::MdnsAdvertiser mdns;      // Bonjour/mDNS advertisement
     std::string mdnsName;          // --name flag; empty => computer name
+    bool vsync = false;            // --vsync flag; default off (low latency)
 
     // hello resend after user resize (debounced, PROTOCOL.md 6.1)
     int64_t resizeAtMs = 0;
@@ -395,6 +396,8 @@ bool App::Setup(int port) {
     LOG_INFO("window shown; calling renderer.Init");
 
     if (!renderer.Init(hwnd, device, initW, initH)) return false;
+    renderer.SetVsync(vsync);
+    LOG_INFO("renderer: vsync %s", vsync ? "on" : "off (lowest latency)");
 
     frameEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr); // auto-reset
 
@@ -729,6 +732,7 @@ int main(int argc, char** argv) {
     int port = 9000;
     const char* logFile = nullptr;
     std::string mdnsName;
+    bool vsync = false;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--port" && i + 1 < argc) {
             port = std::atoi(argv[++i]);
@@ -736,10 +740,12 @@ int main(int argc, char** argv) {
             logFile = argv[++i];
         } else if (std::string(argv[i]) == "--name" && i + 1 < argc) {
             mdnsName = argv[++i];
+        } else if (std::string(argv[i]) == "--vsync") {
+            vsync = true;
         } else {
             std::printf(
                 "usage: opendisplay_receiver [--port N] [--log file] [--name "
-                "S]\n");
+                "S] [--vsync]\n");
             return 1;
         }
     }
@@ -767,6 +773,7 @@ int main(int argc, char** argv) {
 
     App app;
     app.mdnsName = std::move(mdnsName);
+    app.vsync = vsync;
     int rc = 1;
     if (app.Setup(port)) {
         app.Run();
