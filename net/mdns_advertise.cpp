@@ -63,14 +63,22 @@ std::vector<uint8_t> EncodeName(const std::string& name) {
 }
 
 // Appends one answer record: NAME TYPE CLASS TTL RDLENGTH RDATA.
+//  - ttl: seconds the peer may cache the record. TTL 0 in mDNS is a
+//    "goodbye" (delete from cache, RFC 6762 10.1) — announcing with 0 makes
+//    every client discard the record on arrival. Use >= 120 (RFC 6762 10.2).
+//  - flush: set the cache-flush bit. Only for records unique to this
+//    instance (SRV/TXT/A). Shared records such as PTR must NOT flush
+//    (RFC 6762 10.2) — a cache-flush PTR evicts every other instance of the
+//    service type browsed on the same host.
 void AppendRecord(std::vector<uint8_t>& out, const std::string& name,
-                  uint16_t type, const std::vector<uint8_t>& rdata) {
+                  uint16_t type, const std::vector<uint8_t>& rdata,
+                  uint32_t ttl, bool flush) {
     std::vector<uint8_t> enc = EncodeName(name);
     out.insert(out.end(), enc.begin(), enc.end());
     PutU16(out, type);
-    PutU16(out, kClassCacheFlush);
-    PutU16(out, 0);  // TTL hi (0: permanent)
-    PutU16(out, 0);  // TTL lo
+    PutU16(out, uint16_t(flush ? kClassCacheFlush : 0x0001));
+    PutU16(out, uint16_t(ttl >> 16));
+    PutU16(out, uint16_t(ttl & 0xFFFF));
     PutU16(out, uint16_t(rdata.size()));
     out.insert(out.end(), rdata.begin(), rdata.end());
 }
@@ -169,8 +177,10 @@ bool MdnsAdvertiser::Start(const Config& cfg) {
     PutU16(pkt, 0);        // authority
     PutU16(pkt, 0);        // additional
 
-    // 1. PTR: service type -> instance name.
-    AppendRecord(pkt, kServiceDomain, kTypePtr, EncodeName(fullInstance));
+    // 1. PTR: service type -> instance name. Shared record: real TTL, no
+    //    cache-flush (RFC 6762 10.2).
+    AppendRecord(pkt, kServiceDomain, kTypePtr, EncodeName(fullInstance),
+                 4500, false);
 
     // 2. SRV: instance -> priority/weight/port + target host.
     std::vector<uint8_t> srv;
@@ -179,7 +189,7 @@ bool MdnsAdvertiser::Start(const Config& cfg) {
     PutU16(srv, cfg_.port);
     std::vector<uint8_t> hostEnc = EncodeName(hostName_);
     srv.insert(srv.end(), hostEnc.begin(), hostEnc.end());
-    AppendRecord(pkt, fullInstance, kTypeSrv, srv);
+    AppendRecord(pkt, fullInstance, kTypeSrv, srv, 120, true);
 
     // 3. TXT: instance -> id + pv (length-prefixed strings).
     std::vector<uint8_t> txt;
@@ -189,7 +199,7 @@ bool MdnsAdvertiser::Start(const Config& cfg) {
     };
     addTxt("id=" + cfg_.id);
     addTxt("pv=" + std::to_string(cfg_.pv));
-    AppendRecord(pkt, fullInstance, kTypeTxt, txt);
+    AppendRecord(pkt, fullInstance, kTypeTxt, txt, 120, true);
 
     // 4. A: host -> IPv4.
     in_addr addr{};
@@ -199,7 +209,8 @@ bool MdnsAdvertiser::Start(const Config& cfg) {
         return false;
     }
     const uint8_t* ab = reinterpret_cast<const uint8_t*>(&addr);
-    AppendRecord(pkt, hostName_, kTypeA, std::vector<uint8_t>(ab, ab + 4));
+    AppendRecord(pkt, hostName_, kTypeA, std::vector<uint8_t>(ab, ab + 4),
+                 120, true);
 
     // UDP socket.
     sock_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -289,15 +300,17 @@ void MdnsAdvertiser::SendAnnouncement(const std::vector<uint8_t>& pkt) {
 void MdnsAdvertiser::ThreadMain() {
     using clock = std::chrono::steady_clock;
 
-    // Initial burst: two announcements ~250 ms apart (RFC 6762 8).
+    // Initial burst: two announcements one second apart (RFC 6762 8.1).
     SendAnnouncement(announcement_);
     auto last = clock::now();
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     if (!running_) return;
     SendAnnouncement(announcement_);
     last = clock::now();
 
     const std::string marker = kDetectMarker;
+    in_addr selfAddr{};
+    inet_pton(AF_INET, ipv4_.c_str(), &selfAddr);
     while (running_) {
         if (canReceive_) {
             fd_set rs;
@@ -315,17 +328,25 @@ void MdnsAdvertiser::ThreadMain() {
                 int n = recvfrom(sock_, reinterpret_cast<char*>(buf), sizeof(buf), 0,
                                  reinterpret_cast<sockaddr*>(&from), &fromlen);
                 if (n > 0) {
-                    {
+                    const bool fromSelf =
+                        from.sin_addr.s_addr == selfAddr.s_addr;
+                    // Flags start at byte 2; QR is the top bit (RFC 1035 4.1).
+                    const bool isResponse = n >= 4 && (buf[2] & 0x80) != 0;
+                    if (!fromSelf && anyRecvCount_ < 10) {
                         char ip[INET_ADDRSTRLEN] = {};
                         inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
-                        if (anyRecvCount_ < 10)
-                            LOG_INFO("mdns: recv %d bytes from %s:%u", n, ip,
-                                     unsigned(ntohs(from.sin_port)));
-                        ++anyRecvCount_;
+                        LOG_INFO("mdns: recv %d bytes from %s:%u%s", n, ip,
+                                 unsigned(ntohs(from.sin_port)),
+                                 isResponse ? "" : " (query)");
                     }
+                    if (!fromSelf) ++anyRecvCount_;
                     std::string_view sv(reinterpret_cast<const char*>(buf),
                                         size_t(n));
-                    if (sv.find(marker) != std::string_view::npos) {
+                    // Only ever answer queries (QR=0). Responding to our own
+                    // looped-back announcements (QR=1) starts an infinite
+                    // announce/loopback/announce storm.
+                    if (!isResponse && !fromSelf &&
+                        sv.find(marker) != std::string_view::npos) {
                         if (queryCount_ < 5) {
                             char ip[INET_ADDRSTRLEN] = {};
                             inet_ntop(AF_INET, &from.sin_addr, ip,
