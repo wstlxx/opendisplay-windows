@@ -122,6 +122,7 @@ void Session::ReadLoop() {
             }
             if (n > 0) {
                 lastDataMs_ = SteadyNowMs();
+                bytesReceived_.fetch_add(static_cast<uint64_t>(n));
                 bool valid = true;
                 auto frames =
                     decoder_.Feed(buf.data(), static_cast<size_t>(n), valid);

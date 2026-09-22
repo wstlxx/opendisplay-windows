@@ -1,6 +1,7 @@
 // Bounded video queue between the network read thread and the decode thread.
-// Capacity 4; when full the OLDEST frame is dropped (we can never use it any
-// more — the display is already 4+ frames ahead of us).
+// Capacity 2: small on purpose — each queued frame adds a frame of input
+// latency, and when full the OLDEST frame is dropped anyway (the display is
+// already ahead of it).
 
 #pragma once
 
@@ -16,7 +17,7 @@ namespace od::app {
 
 class VideoQueue {
 public:
-    static constexpr size_t kCapacity = 4;
+    static constexpr size_t kCapacity = 2;
 
     explicit VideoQueue(size_t capacity = kCapacity) : capacity_(capacity) {}
 

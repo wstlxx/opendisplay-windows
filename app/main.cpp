@@ -141,8 +141,11 @@ struct App {
 
     // Stats
     uint64_t lastDecodedForFps = 0;
+    uint64_t lastBytesAtStats_ = 0;
     int64_t lastStatsAtMs = 0;
     int lastRttMs = -1;
+    int lastE2eMs = -1;   // latest measured end-to-end latency
+    long presentN_ = 0;   // frames presented since start (for rate-limited logs)
 
     // Fullscreen
     bool fullscreen = false;
@@ -566,13 +569,17 @@ void App::SendStats(net::Session* s) {
     const int64_t now = SteadyNowMs();
     const uint64_t decoded = decoder->FramesDecoded();
     const int64_t dt = now - lastStatsAtMs;
-    int fps = 0;
+    int fps = 0, mbps = 0;
     if (dt > 100) {
         fps = static_cast<int>((decoded - lastDecodedForFps) * 1000 / dt);
+        const uint64_t bytes = s->BytesReceived();
+        mbps = static_cast<int>((bytes - lastBytesAtStats_) * 8 / dt / 1000);
+        lastBytesAtStats_ = bytes;
     }
     lastStatsAtMs = now;
     lastDecodedForFps = decoded;
-    s->SendControl(od::BuildStats(fps, 0, lastRttMs, -1, -1));
+    const int rtt = (lastRttMs >= 0 && lastRttMs < 5000) ? lastRttMs : -1;
+    s->SendControl(od::BuildStats(fps, mbps, rtt, lastE2eMs, lastE2eMs));
 }
 
 void App::MaybeSendHello() {
@@ -639,6 +646,20 @@ void App::Run() {
             latest = latestFrame;
         }
         renderer.Present(latest.get());
+
+        // End-to-end latency: sender capture time -> our present, corrected
+        // by half the RTT (rough clock-offset estimate). Roughly: how long
+        // after the Mac captured the pixels do they reach our window?
+        if (latest && latest->captureMs > 0 && lastRttMs >= 0) {
+            const int64_t e2e =
+                UnixNowMs() - latest->captureMs - lastRttMs / 2;
+            if (e2e > 0 && e2e < 60000) {
+                lastE2eMs = static_cast<int>(e2e);
+                if (++presentN_ % 250 == 0)
+                    LOG_INFO("latency: e2e ~ %d ms (rtt=%d ms)", lastE2eMs,
+                             lastRttMs);
+            }
+        }
     }
 }
 

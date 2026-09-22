@@ -65,6 +65,7 @@ public:
     bool Alive() const { return !closed_.load(std::memory_order_acquire); }
     const std::string& Peer() const { return peer_; }
     uint64_t FramesReceived() const { return framesReceived_; }
+    uint64_t BytesReceived() const { return bytesReceived_.load(); }
 
     // Liveness tuning (PROTOCOL.md 5.5).
     static constexpr int64_t kLivenessTimeoutMs = 5000;
@@ -87,6 +88,7 @@ private:
     int64_t lastPingMs_ = 0;
 
     uint64_t framesReceived_ = 0;
+    std::atomic<uint64_t> bytesReceived_{0};
 };
 
 } // namespace od::net

@@ -9,6 +9,16 @@
 
 namespace od::video {
 
+// "Microsoft Hardware H.264 Decoder MFT" (msmh264dec.dll). Absent from the
+// reduced SDK on CI, so define it when the SDK has not already.
+#ifndef CLSID_CMSH264DecoderMFT
+static const CLSID kClSIDHardwareH264 = {
+    0x516630D3, 0x7C2B, 0x4C2F,
+    {0x8A, 0x53, 0xFA, 0x06, 0xA1, 0x17, 0x17, 0xF0}};
+#else
+static const CLSID kClSIDHardwareH264 = CLSID_CMSH264DecoderMFT;
+#endif
+
 H264Decoder::H264Decoder(Config cfg) : cfg_(std::move(cfg)) {}
 
 H264Decoder::~H264Decoder() { Shutdown(); }
@@ -21,6 +31,7 @@ void H264Decoder::ResetMft() {
     decoder_.Reset();
     mftReady_ = false;
     sampleSize_ = 0;
+    captureTimes_.clear();
 }
 
 void H264Decoder::RequestKeyframe() {
@@ -52,40 +63,45 @@ bool H264Decoder::SetOutputNv12() {
 }
 
 bool H264Decoder::SetupMft() {
-    decoder_.Reset();
+    // Hardware first (GPU decode: lower latency, CPU free for rendering),
+    // software as the fallback. Input type is raw H.264; the MFT offers a
+    // placeholder output type until it has seen enough input to know the real
+    // format.
+    static const CLSID* kCandidates[] = {&kClSIDHardwareH264,
+                                         &CLSID_MSH264DecoderMFT};
+    HRESULT lastCr = E_NOINTERFACE;
+    for (const CLSID* clsid : kCandidates) {
+        decoder_.Reset();
+        IMFTransform* mft = nullptr;
+        const HRESULT cr = ::CoCreateInstance(*clsid, nullptr,
+                                              CLSCTX_INPROC_SERVER,
+                                              __uuidof(IMFTransform),
+                                              reinterpret_cast<void**>(&mft));
+        if (FAILED(cr) || !mft) {
+            lastCr = cr;
+            continue;
+        }
+        decoder_.Attach(mft);
 
-    IMFTransform* mft = nullptr;
-    const HRESULT cr = ::CoCreateInstance(CLSID_MSH264DecoderMFT, nullptr,
-                                          CLSCTX_INPROC_SERVER,
-                                          __uuidof(IMFTransform),
-                                          reinterpret_cast<void**>(&mft));
-    if (FAILED(cr) || !mft) {
-        LOG_ERROR("decoder: CoCreateInstance(CLSID_MSH264DecoderMFT) failed: "
-                  "0x%lX",
-                  static_cast<unsigned long>(cr));
-        return false;
-    }
-    decoder_.Attach(mft);
+        Microsoft::WRL::ComPtr<IMFMediaType> inputType;
+        if (FAILED(MFCreateMediaType(inputType.ReleaseAndGetAddressOf())))
+            continue;
+        inputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+        inputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
+        if (FAILED(decoder_->SetInputType(0, inputType.Get(), 0)))
+            continue;
+        if (!SetOutputNv12()) continue;
 
-    // Input type is raw H.264. The MFT offers a placeholder output type until
-    // it has seen enough input to know the real format.
-    Microsoft::WRL::ComPtr<IMFMediaType> inputType;
-    if (FAILED(MFCreateMediaType(inputType.ReleaseAndGetAddressOf())))
-        return false;
-    inputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    inputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
-    if (FAILED(decoder_->SetInputType(0, inputType.Get(), 0))) {
-        LOG_ERROR("decoder: SetInputType(H264) failed");
-        return false;
+        sampleSize_ = 0;
+        mftReady_ = true;
+        hwDecoder_ = (clsid == &kClSIDHardwareH264);
+        LOG_INFO("decoder: using %s H.264 decoder MFT",
+                 hwDecoder_ ? "HARDWARE" : "software (fallback)");
+        return true;
     }
-    if (!SetOutputNv12()) {
-        LOG_ERROR("decoder: SetOutputNv12 (initial) failed");
-        return false;
-    }
-
-    sampleSize_ = 0;
-    mftReady_ = true;
-    return true;
+    LOG_ERROR("decoder: no usable H.264 decoder MFT (last hr=0x%lX)",
+              static_cast<unsigned long>(lastCr));
+    return false;
 }
 
 void H264Decoder::PublishNv12(IMFSample* outSample) {
@@ -103,6 +119,10 @@ void H264Decoder::PublishNv12(IMFSample* outSample) {
         }
     }
 
+    if (!captureTimes_.empty()) {
+        frame->captureMs = captureTimes_.front();
+        captureTimes_.pop_front();
+    }
     if (frame->width > 0 && frame->height > 0) {
         // Copy the decoded NV12 into the frame (CPU only). The D3D11 upload is
         // done on the render thread: a D3D11 immediate context is single-
@@ -131,7 +151,8 @@ void H264Decoder::PublishNv12(IMFSample* outSample) {
     buf->Release();
 }
 
-bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb) {
+bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb,
+                                 int64_t captureMs) {
     // 1) Feed the whole access unit as a single input sample.
     {
         Microsoft::WRL::ComPtr<IMFMediaBuffer> inBuf;
@@ -155,6 +176,7 @@ bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb) {
                       static_cast<unsigned long>(hr));
             return false;
         }
+        if (SUCCEEDED(hr) && captureMs > 0) captureTimes_.push_back(captureMs);
         if (fc <= 3 || (fc % 250) == 0)
             LOG_INFO("decoder: fed AU #%llu (%s hr=0x%lX)", fc,
                      hr == MF_E_NOTACCEPTING ? "not-accepting"
@@ -244,7 +266,7 @@ void H264Decoder::Submit(net::VideoSample&& s) {
         }
     }
 
-    if (!FeedAccessUnit(s.annexb)) {
+    if (!FeedAccessUnit(s.annexb, s.captureMs)) {
         decoderErrors_++;
         ResetMft();
         RequestKeyframe();

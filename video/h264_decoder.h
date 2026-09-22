@@ -1,9 +1,15 @@
 // Real-time H.264 decode via Media Foundation.
 //
 // Pipeline: the decode thread feeds each Annex-B access unit straight into the
-// Media Foundation H.264 decoder MFT (CLSID_MSH264DecoderMFT) with
-// ProcessInput, then drains decoded NV12 frames with ProcessOutput. Each
-// decoded frame is uploaded to a D3D11 texture and published via onFrame.
+// Media Foundation H.264 decoder MFT with ProcessInput, then drains decoded
+// NV12 frames with ProcessOutput. Each decoded frame is uploaded to a D3D11
+// texture and published via onFrame.
+//
+// Decoder choice: the HARDWARE H.264 decoder MFT (CLSID_CMSH264DecoderMFT,
+// GPU decode) is tried first -- it is lower-latency and keeps the CPU free
+// for rendering, which matters for a live screen mirror. The software MFT
+// (CLSID_MSH264DecoderMFT) is the fallback when the hardware one is
+// unavailable or refuses NV12 output.
 //
 // Why a decoder MFT and not a source reader over a byte stream: on Windows,
 // MFCreateSourceReaderFromByteStream returns MF_E_UNSUPPORTED_MEDIA_TYPE for
@@ -20,6 +26,7 @@
 #pragma once
 
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -82,6 +89,9 @@ struct DecodedFrame {
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     // MF_MT_DEFAULT_CROP (0 when absent).
     int cropLeft = 0, cropTop = 0, cropRight = 0, cropBottom = 0;
+    // Sender-side capture time (wall-clock ms, SENDER's clock) from the
+    // stream header; -1 when absent. Used for end-to-end latency stats.
+    int64_t captureMs = -1;
 };
 
 class H264Decoder {
@@ -122,7 +132,7 @@ private:
 #ifdef _WIN32
     bool SetupMft();
     bool SetOutputNv12();
-    bool FeedAccessUnit(const std::vector<uint8_t>& annexb);
+    bool FeedAccessUnit(const std::vector<uint8_t>& annexb, int64_t captureMs);
     void PublishNv12(IMFSample* outSample);
     void ResetMft();
     void RequestKeyframe();
@@ -137,6 +147,10 @@ private:
     std::vector<uint8_t> lastSps_;
     std::vector<uint8_t> lastPps_;
     int64_t lastKfRequestMs = 0;
+    bool hwDecoder_ = false;  // true when the hardware MFT is in use
+    // Sender capture times in input order (no B-frames in the stream, so
+    // input order == output order); decoded frames pop the front.
+    std::deque<int64_t> captureTimes_;
 #endif
 
     std::atomic<uint64_t> samplesSubmitted_{0};
