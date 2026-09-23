@@ -163,19 +163,26 @@ bool Renderer::CreateSwapChain(int w, int h) {
     }
     factory_->MakeWindowAssociation(swapHwnd_, 0);
 
-    IDXGIResource* back = nullptr;
-    if (FAILED(swap_->GetBuffer(0, __uuidof(IDXGIResource),
-                                reinterpret_cast<void**>(&back)))) {
-        LOG_ERROR("renderer: GetBuffer failed");
+    return CreateRenderTarget();
+}
+
+bool Renderer::CreateRenderTarget() {
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> back;
+    const HRESULT getHr = swap_->GetBuffer(
+        0, __uuidof(ID3D11Texture2D),
+        reinterpret_cast<void**>(back.ReleaseAndGetAddressOf()));
+    if (FAILED(getHr)) {
+        LOG_ERROR("renderer: GetBuffer failed (0x%lX)",
+                  static_cast<unsigned long>(getHr));
         return false;
     }
-    ID3D11Texture2D* tex = nullptr;
-    back->QueryInterface(__uuidof(ID3D11Texture2D),
-                         reinterpret_cast<void**>(&tex));
-    back->Release();
-    if (!tex) return false;
-    device_->CreateRenderTargetView(tex, nullptr, rtv_.ReleaseAndGetAddressOf());
-    tex->Release();
+    const HRESULT viewHr = device_->CreateRenderTargetView(
+        back.Get(), nullptr, rtv_.ReleaseAndGetAddressOf());
+    if (FAILED(viewHr)) {
+        LOG_ERROR("renderer: CreateRenderTargetView failed (0x%lX)",
+                  static_cast<unsigned long>(viewHr));
+        return false;
+    }
     return true;
 }
 
@@ -221,31 +228,26 @@ bool Renderer::CreateShaders() {
 
 void Renderer::Resize(int w, int h) {
     if (w <= 0 || h <= 0) return;
-    if (!swap_ || !ctx_ || !rtv_) return; // not (re)initialized yet
-    clientW_ = w;
-    clientH_ = h;
+    if (!swap_ || !ctx_) return; // not initialized yet
+    if (w == clientW_ && h == clientH_ && rtv_) return;
+    // ResizeBuffers requires every back-buffer reference to be released,
+    // including the RTV bound to the immediate context. Flush alone does not
+    // release either reference.
+    ctx_->ClearState();
+    rtv_.Reset();
     ctx_->Flush();
     const HRESULT rhr =
         swap_->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0);
     if (FAILED(rhr)) {
-        LOG_WARN("renderer: ResizeBuffers failed (0x%lX) -- will retry on "
-                 "next size change", static_cast<unsigned long>(rhr));
+        LOG_WARN("renderer: ResizeBuffers failed (0x%lX)",
+                 static_cast<unsigned long>(rhr));
+        CreateRenderTarget(); // keep the old back buffer drawable
         return;
     }
-    rtv_.Reset();
-    IDXGIResource* back = nullptr;
-    if (SUCCEEDED(swap_->GetBuffer(0, __uuidof(IDXGIResource),
-                                    reinterpret_cast<void**>(&back)))) {
-        ID3D11Texture2D* tex = nullptr;
-        back->QueryInterface(__uuidof(ID3D11Texture2D),
-                             reinterpret_cast<void**>(&tex));
-        back->Release();
-        if (tex) {
-            device_->CreateRenderTargetView(tex, nullptr,
-                                            rtv_.ReleaseAndGetAddressOf());
-            tex->Release();
-        }
-    }
+    clientW_ = w;
+    clientH_ = h;
+    if (CreateRenderTarget())
+        LOG_INFO("renderer: resized to %dx%d", w, h);
 }
 
 // (Re)create the persistent NV12 upload texture + its two planar SRVs when the
@@ -413,7 +415,10 @@ void Renderer::Present(const video::DecodedFrame* frame) {
                  (const void*)frame, pn);
     }
 
-    swap_->Present(vsync_ ? 1 : 0, 0);
+    const HRESULT presentHr = swap_->Present(vsync_ ? 1 : 0, 0);
+    if (FAILED(presentHr))
+        LOG_WARN("renderer: Present failed (0x%lX)",
+                 static_cast<unsigned long>(presentHr));
 }
 
 } // namespace od::render

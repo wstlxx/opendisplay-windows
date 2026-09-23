@@ -152,7 +152,7 @@ Every message both directions is `[4-byte big-endian length][payload]`.
   (0x7B) **and** it contains no NUL byte; otherwise it is a **video frame**.
 - **Sender → receiver**: `welcome`, `streamConfig`, `pong`, `ping` (health),
   `updateRequired`, `cursor`.
-- **Receiver → sender**: `hello` (first message, carries window size/scale/id),
+- **Receiver → sender**: `hello` (first message, carries virtual display size/scale/id),
   `ping` (RTT, every 2 s), `kf` (keyframe request), `stats` (every ~5 s),
   `closing`.
 - Video is Annex-B; when an SPS/PPS is present the sender inlines it with the
@@ -164,8 +164,9 @@ Full normative detail is in `docs/RESEARCH.md`.
 
 - Single sender at a time (new connection replaces the old one) — per spec.
 - Cursor rendering is parsed but not drawn (out of initial scope).
-- No automatic window resize on stream size change: the fixed window letterboxes
-  the incoming size (avoids a `hello`→re-encode feedback loop).
+- Resizing or maximizing the window scales the existing 1280×720 virtual display;
+  it does not change the Mac display or restart capture and encoding. Incoming
+  streams at other sizes are letterboxed in the window.
 - The Windows-only layer (`net/`, `video/`, `render/`, `app/`) needs the
   Windows SDK, so it is built in CI on a `windows-2022` runner (not on Linux).
   It is additionally cross-checked by the protocol-level integration test.

@@ -40,6 +40,7 @@ public:
 
 private:
     bool CreateSwapChain(int w, int h);
+    bool CreateRenderTarget();
     bool CreateShaders();
     // Main thread only. (Re)create the persistent NV12 upload texture + its two
     // planar SRVs when the frame size changes.

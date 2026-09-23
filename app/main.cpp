@@ -48,6 +48,11 @@ using namespace od::app;
 
 namespace {
 
+// Window size is only the presentation canvas. Keep the advertised virtual
+// display raster stable when the user resizes or maximizes the window.
+constexpr int kDisplayWidth = 1280;
+constexpr int kDisplayHeight = 720;
+
 int64_t UnixNowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::system_clock::now().time_since_epoch())
@@ -143,9 +148,6 @@ struct App {
     std::string mdnsName;          // --name flag; empty => computer name
     bool vsync = false;            // --vsync flag; default off (low latency)
 
-    // hello resend after user resize (debounced, PROTOCOL.md 6.1)
-    int64_t resizeAtMs = 0;
-
     // Stats
     uint64_t lastDecodedForFps = 0;
     uint64_t lastBytesAtStats_ = 0;
@@ -188,7 +190,6 @@ struct App {
     void ReapEndedSession();
     void HandleControl(net::Session* s, const ControlMessage& msg);
     void SendStats(net::Session* s);
-    void MaybeSendHello();
     void ToggleFullscreen();
 
     // WndProc trampoline (whnd is the window being messaged; it is valid even
@@ -231,7 +232,6 @@ LRESULT App::WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (w > 0 && h > 0) {
                     renderer.Resize(w, h);
                     redrawNeeded = true;
-                    resizeAtMs = SteadyNowMs(); // debounced hello
                 }
             }
             return 0;
@@ -407,7 +407,7 @@ bool App::Setup(int port) {
     }
     LOG_INFO("window class registered (atom=%lu)", (unsigned long)atom);
 
-    const int initW = 1280, initH = 720;
+    const int initW = kDisplayWidth, initH = kDisplayHeight;
     RECT rc{0, 0, initW, initH};
     AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
 
@@ -560,9 +560,7 @@ void App::OnAccept(SOCKET sock, const std::string& peer) {
     }
     s->Start();
     // hello MUST be the first message we send (PROTOCOL.md 6.1).
-    RECT cr{};
-    GetClientRect(hwnd, &cr);
-    s->SendHello(cr.right - cr.left, cr.bottom - cr.top, uiScale, helloId);
+    s->SendHello(kDisplayWidth, kDisplayHeight, uiScale, helloId);
     lastStatsAtMs = SteadyNowMs();
 }
 
@@ -652,20 +650,6 @@ void App::SendStats(net::Session* s) {
     s->SendControl(od::BuildStats(fps, mbps, rtt, lastE2eMs, lastE2eMs));
 }
 
-void App::MaybeSendHello() {
-    if (resizeAtMs == 0) return;
-    if (SteadyNowMs() - resizeAtMs < 300) return; // debounce
-    resizeAtMs = 0;
-    std::lock_guard lock(sessionMutex);
-    if (!session) return;
-    RECT cr{};
-    GetClientRect(hwnd, &cr);
-    session->SendHello(cr.right - cr.left, cr.bottom - cr.top, uiScale,
-                       helloId);
-    LOG_INFO("resent hello with window size %dx%d", cr.right - cr.left,
-             cr.bottom - cr.top);
-}
-
 void App::ToggleFullscreen() {
     if (!fullscreen) {
         fullscreen = true;
@@ -709,7 +693,6 @@ void App::Run() {
         }
         if (!running) break;
         ReapEndedSession();
-        MaybeSendHello();
         const int64_t now = SteadyNowMs();
         if (now - lastPipelineLogMs_ >= 5000) {
             const uint64_t received = receivedVideo_.load(std::memory_order_relaxed);
