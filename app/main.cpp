@@ -273,10 +273,7 @@ LRESULT App::WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (session) session->SendClosing();
                 running = false;
             }
-            if (fullscreen) {
-                fullscreen = false;
-                ShowCursor(TRUE);
-            }
+            fullscreen = false;
             DestroyWindow(whnd);
             return 0;
         case WM_GETMINMAXINFO: {
@@ -473,7 +470,6 @@ bool App::Setup(int port) {
     }
     uiScale = static_cast<double>(GetDpiForWindow(hwnd)) / 96.0;
     ShowWindow(hwnd, SW_SHOW);
-    if (fullscreen) ShowCursor(FALSE);
     LOG_INFO("window shown; calling renderer.Init");
 
     RECT client{};
@@ -849,10 +845,7 @@ void App::Run() {
 
 void App::TearDown() {
     running = false;
-    if (fullscreen) {
-        fullscreen = false;
-        ShowCursor(TRUE);
-    }
+    fullscreen = false;
 
     // Take the session out under the lock, then close/destroy it OUTSIDE the
     // lock: ~Session joins the read thread, whose onClosed re-locks

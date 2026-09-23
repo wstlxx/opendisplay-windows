@@ -98,7 +98,8 @@ opendisplay_receiver.exe [--port N] [--log file] [--name S]
    the machine's IP:port directly). It connects, sends `hello` → you reply
    `welcome`, then streams H.264 + control JSON.
 3. Place `config.ini` beside the `.exe` and edit it before starting the receiver.
-   Windowed 1280x720 is the default. In fullscreen, **Ctrl+Shift+Alt+Q** quits;
+   Windowed 1280x720 is the default. Fullscreen keeps the mouse pointer visible.
+   In fullscreen, **Ctrl+Shift+Alt+Q** quits;
    F1, F11 and Esc are not receiver shortcuts.
 
 ```ini
