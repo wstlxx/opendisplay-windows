@@ -157,6 +157,7 @@ struct App {
     int64_t lastPipelineLogMs_ = 0;
     uint64_t lastReceivedLogged_ = 0;
     uint64_t lastSubmittedLogged_ = 0;
+    uint64_t lastAcceptedLogged_ = 0;
     uint64_t lastPublishedLogged_ = 0;
     bool skewWarned_ = false;
     long presentN_ = 0;   // frames presented since start (for rate-limited logs)
@@ -713,16 +714,19 @@ void App::Run() {
         if (now - lastPipelineLogMs_ >= 5000) {
             const uint64_t received = receivedVideo_.load(std::memory_order_relaxed);
             const uint64_t submitted = decoder->SamplesSubmitted();
+            const uint64_t accepted = decoder->AccessUnitsAccepted();
             const uint64_t published = decoder->FramesPublished();
             const int64_t arrival = lastVideoArrivalMs_.load(std::memory_order_relaxed);
             const int64_t senderEncode =
                 lastSenderEncodeMs_.load(std::memory_order_relaxed);
-            LOG_INFO("pipeline/5s: recv=%llu submit=%llu publish=%llu "
+            LOG_INFO("pipeline/5s: recv=%llu submit=%llu accepted=%llu "
+                     "publish=%llu "
                      "queue=%zu dropped=%llu sender-encode-to-send=%lldms "
                      "last-input-age=%lldms "
                      "last-new-frame-age=%lldms last-recv-to-present=%dms",
                      (unsigned long long)(received - lastReceivedLogged_),
                      (unsigned long long)(submitted - lastSubmittedLogged_),
+                     (unsigned long long)(accepted - lastAcceptedLogged_),
                      (unsigned long long)(published - lastPublishedLogged_),
                      queue.Size(), (unsigned long long)queue.Dropped(),
                      (long long)senderEncode,
@@ -733,6 +737,7 @@ void App::Run() {
             lastPipelineLogMs_ = now;
             lastReceivedLogged_ = received;
             lastSubmittedLogged_ = submitted;
+            lastAcceptedLogged_ = accepted;
             lastPublishedLogged_ = published;
         }
         std::shared_ptr<video::DecodedFrame> latest;

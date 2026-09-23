@@ -19,6 +19,12 @@ static const CLSID kClSIDHardwareH264 = {
 static const CLSID kClSIDHardwareH264 = CLSID_CMSH264DecoderMFT;
 #endif
 
+// MF_LOW_LATENCY / CODECAPI_AVLowLatencyMode. Define the documented GUID
+// locally because the CI runner's reduced MF headers omit some GUID symbols.
+static const GUID kMfLowLatency = {
+    0x9c27891a, 0xed7a, 0x40e1,
+    {0x88, 0xe8, 0xb2, 0x27, 0x27, 0xa0, 0x24, 0xee}};
+
 H264Decoder::H264Decoder(Config cfg) : cfg_(std::move(cfg)) {}
 
 H264Decoder::~H264Decoder() { Shutdown(); }
@@ -87,6 +93,22 @@ bool H264Decoder::SetupMft() {
             continue;
         }
         decoder_.Attach(mft);
+
+        // The direct-MFT path does not inherit the source reader's low
+        // latency setting. Configure it before negotiating media types so
+        // the decoder does not keep reorder/display buffers unnecessarily.
+        Microsoft::WRL::ComPtr<IMFAttributes> attrs;
+        HRESULT lowHr = decoder_->GetAttributes(attrs.ReleaseAndGetAddressOf());
+        if (SUCCEEDED(lowHr))
+            lowHr = attrs ? attrs->SetUINT32(kMfLowLatency, TRUE) : E_POINTER;
+        if (SUCCEEDED(lowHr)) {
+            LOG_INFO("decoder: %s MFT low-latency mode enabled",
+                     isHw ? "hardware" : "software");
+        } else {
+            LOG_WARN("decoder: %s MFT low-latency mode unavailable "
+                     "(hr=0x%lX)", isHw ? "hardware" : "software",
+                     static_cast<unsigned long>(lowHr));
+        }
 
         Microsoft::WRL::ComPtr<IMFMediaType> inputType;
         if (FAILED(MFCreateMediaType(inputType.ReleaseAndGetAddressOf())))
@@ -208,6 +230,7 @@ bool H264Decoder::FeedAccessUnit(const std::vector<uint8_t>& annexb,
         }
         // Push for EVERY accepted AU (even captureMs<0) so the FIFO
         // stays aligned with the published frames.
+        acceptedUnits_++;
         captureTimes_.push_back({captureMs, arrivalMs});
         if (fc <= 3 || (fc % 250) == 0)
             LOG_INFO("decoder: fed AU #%llu (accepted hr=0x%lX)", fc,

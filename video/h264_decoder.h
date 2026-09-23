@@ -127,6 +127,7 @@ public:
 
     // Diagnostics (touched from more than one thread; lock-free).
     uint64_t SamplesSubmitted() const { return samplesSubmitted_.load(); }
+    uint64_t AccessUnitsAccepted() const { return acceptedUnits_.load(); }
     uint64_t FramesDecoded() const { return framesDecoded_.load(); }
     uint64_t FramesPublished() const { return publishedFrames_.load(); }
     uint64_t Rebuilds() const { return rebuilds_.load(); }
@@ -166,6 +167,7 @@ private:
     std::atomic<uint64_t> rebuilds_{0};
     std::atomic<uint64_t> decoderErrors_{0};
     std::atomic<uint64_t> fedCount_{0};
+    std::atomic<uint64_t> acceptedUnits_{0};
     std::atomic<uint64_t> publishedFrames_{0};
 };
 
