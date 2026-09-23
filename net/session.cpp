@@ -83,12 +83,13 @@ bool Session::SendControl(const std::string& json) {
 }
 
 void Session::SendHello(int pixelsWide, int pixelsHigh, double scale,
-                        const std::string& id) {
+                        const std::string& id, int bitrateKbps) {
     od::HelloInfo info;
     info.pixelsWide = pixelsWide;
     info.pixelsHigh = pixelsHigh;
     info.scale = scale;
     info.id = id;
+    info.bitrateKbps = bitrateKbps;
     SendControl(od::BuildHello(info));
 }
 

@@ -97,7 +97,32 @@ opendisplay_receiver.exe [--port N] [--log file] [--name S]
 2. On the Mac, the OpenDisplay sender discovers it automatically (or you can dial
    the machine's IP:port directly). It connects, sends `hello` → you reply
    `welcome`, then streams H.264 + control JSON.
-3. **F** toggles fullscreen, **Esc** exits fullscreen, closing the window quits.
+3. Place `config.ini` beside the `.exe` and edit it before starting the receiver.
+   Windowed 1280x720 is the default. In fullscreen, **Ctrl+Shift+Alt+Q** quits;
+   F1, F11 and Esc are not receiver shortcuts.
+
+```ini
+[display]
+width = 1280
+height = 720
+fullscreen = false
+adaptive_resolution = false
+
+[video]
+bitrate_kbps = 18000
+```
+
+`width` and `height` set the initial window client size and the Mac virtual
+display size. With `adaptive_resolution = false`, resizing the window scales
+the existing stream. With `true`, the receiver sends a new `hello` after the
+window size has been stable for 500 ms; the Mac rebuilds its virtual display
+and encoder. Fullscreen startup uses the monitor size when adaptation is on.
+The resolution values must be even (width 320-8192, height 240-8192).
+
+`bitrate_kbps` is sent as an optional `hello.bitrateKbps` request. The current
+official Mac sender ignores it and uses the bitrate of its selected quality
+preset; setting this value alone does not change the encoded bitrate. A future
+sender can honor this additive field. The allowed range is 1000-100000 kbps.
 
 The console prints the connection, the decoded stream size, the negotiated RTT,
 and a periodic `fps`/`rtt` line.
@@ -164,8 +189,8 @@ Full normative detail is in `docs/RESEARCH.md`.
 
 - Single sender at a time (new connection replaces the old one) — per spec.
 - Cursor rendering is parsed but not drawn (out of initial scope).
-- Resizing or maximizing the window scales the existing 1280×720 virtual display;
-  it does not change the Mac display or restart capture and encoding. Incoming
+- With adaptive resolution disabled, resizing or maximizing the window scales
+  the configured virtual display without restarting Mac capture. Incoming
   streams at other sizes are letterboxed in the window.
 - The Windows-only layer (`net/`, `video/`, `render/`, `app/`) needs the
   Windows SDK, so it is built in CI on a `windows-2022` runner (not on Linux).

@@ -60,7 +60,7 @@ public:
 
     bool SendControl(const std::string& json);
     void SendHello(int pixelsWide, int pixelsHigh, double scale,
-                   const std::string& id);
+                   const std::string& id, int bitrateKbps);
     void SendPing();
     void SendKeyframeRequest();
     void SendClosing();

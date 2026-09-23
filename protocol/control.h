@@ -30,6 +30,7 @@ struct HelloInfo {
     int pv = 3;
     std::optional<int> maxEncodeWide; // decode ceiling, omit if unknown
     std::optional<int> maxEncodeHigh;
+    std::optional<int> bitrateKbps;    // optional sender extension; old senders ignore it
 };
 
 std::string BuildHello(const HelloInfo& info);

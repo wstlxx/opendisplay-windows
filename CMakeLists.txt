@@ -42,7 +42,7 @@ target_include_directories(od_protocol PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # ---------------------------------------------------------------------------
 # Unit tests (run anywhere, including Linux/macOS).
 # ---------------------------------------------------------------------------
-add_executable(od_tests tests/test_protocol.cpp)
+add_executable(od_tests tests/test_protocol.cpp app/config.cpp)
 target_link_libraries(od_tests PRIVATE od_protocol)
 add_test(NAME protocol COMMAND od_tests)
 
@@ -81,7 +81,7 @@ if(WIN32)
     )
     target_link_libraries(od_render PUBLIC od_video d3d11 dxgi d3dcompiler)
 
-    add_executable(opendisplay_receiver app/main.cpp)
+    add_executable(opendisplay_receiver app/main.cpp app/config.cpp)
     target_link_libraries(opendisplay_receiver
         PRIVATE od_render od_video od_net user32 gdi32 ole32
     )

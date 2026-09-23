@@ -3,8 +3,10 @@
 
 #include <cstdio>
 #include <cstring>
+#include <sstream>
 #include <vector>
 
+#include "app/config.h"
 #include "protocol/annexb.h"
 #include "protocol/control.h"
 #include "protocol/demux.h"
@@ -291,10 +293,12 @@ void TestControlOutgoing() {
     info.pixelsHigh = 1080;
     info.scale = 1.0;
     info.id = "test-uuid";
+    info.bitrateKbps = 12000;
     const auto hello = od::BuildHello(info);
     CHECK(hello.find("\"type\":\"hello\"") != std::string::npos);
     CHECK(hello.find("\"pixelsWide\":1920") != std::string::npos);
     CHECK(hello.find("\"pv\":3") != std::string::npos);
+    CHECK(hello.find("\"bitrateKbps\":12000") != std::string::npos);
 
     // hello must pass the demux rule (it is what we send to the sender).
     const auto hb = Bytes(hello);
@@ -417,6 +421,37 @@ void TestEndToEndPipeline() {
     CHECK(ping && ping->type == od::ControlType::Ping);
 }
 
+void TestReceiverConfig() {
+    std::istringstream defaults("");
+    std::vector<std::string> warnings;
+    const auto base = od::app::ParseConfig(defaults, warnings);
+    CHECK_EQ(base.width, 1280);
+    CHECK_EQ(base.height, 720);
+    CHECK_EQ(base.bitrateKbps, 18000);
+    CHECK(!base.fullscreen && !base.adaptiveResolution);
+    CHECK(warnings.empty());
+
+    std::istringstream custom(
+        "[display]\nwidth = 1920\nheight=1080\nfullscreen=true\n"
+        "adaptive_resolution=1\n[video]\nbitrate_kbps=12000\n");
+    const auto configured = od::app::ParseConfig(custom, warnings);
+    CHECK_EQ(configured.width, 1920);
+    CHECK_EQ(configured.height, 1080);
+    CHECK_EQ(configured.bitrateKbps, 12000);
+    CHECK(configured.fullscreen && configured.adaptiveResolution);
+    CHECK(warnings.empty());
+
+    std::istringstream invalid(
+        "[display]\nwidth=1919\nheight=-1\nfullscreen=maybe\n"
+        "[video]\nbitrate_kbps=abc\n");
+    const auto rejected = od::app::ParseConfig(invalid, warnings);
+    CHECK_EQ(rejected.width, 1280);
+    CHECK_EQ(rejected.height, 720);
+    CHECK_EQ(rejected.bitrateKbps, 18000);
+    CHECK(!rejected.fullscreen);
+    CHECK_EQ(warnings.size(), 4u);
+}
+
 } // namespace
 
 int main() {
@@ -434,6 +469,7 @@ int main() {
     TestControlOutgoing();
     TestControlIncoming();
     TestEndToEndPipeline();
+    TestReceiverConfig();
 
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -17,7 +17,7 @@ jobs:
       - name: Build + run protocol unit tests
         run: |
           g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -I. \
-            protocol/*.cpp tests/test_protocol.cpp -o /tmp/test_protocol
+            protocol/*.cpp app/config.cpp tests/test_protocol.cpp -o /tmp/test_protocol
           /tmp/test_protocol
 
       - name: Build fake_receiver + sim_sender integration test
@@ -59,6 +59,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force build/dist | Out-Null
           Copy-Item build/Release/opendisplay_receiver.exe build/dist/
+          Copy-Item config.ini build/dist/
           Copy-Item tools/sim_sender.py build/dist/
           Copy-Item tests/data/sample.h264 build/dist/sample.h264
 

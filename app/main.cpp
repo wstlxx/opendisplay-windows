@@ -33,7 +33,9 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <vector>
 
+#include "config.h"
 #include "../net/log.h"
 #include "../net/mdns_advertise.h"
 #include "../net/session.h"
@@ -47,11 +49,6 @@ using namespace od;
 using namespace od::app;
 
 namespace {
-
-// Window size is only the presentation canvas. Keep the advertised virtual
-// display raster stable when the user resizes or maximizes the window.
-constexpr int kDisplayWidth = 1280;
-constexpr int kDisplayHeight = 720;
 
 int64_t UnixNowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -80,11 +77,23 @@ std::string ExeDir();
 // A random 32-hex value is generated on first run and persisted to disk.
 std::string MakeStableHelloId() {
     const std::string path = ExeDir() + "opendisplay_id";
+    std::string existing;
     {
         std::ifstream in(path);
-        std::string existing;
         if (in) std::getline(in, existing);
         if (existing.size() == 32) return existing;
+    }
+    // Versions before config.ini omitted the separator in ExeDir(). Preserve
+    // their per-install identity when moving the file beside the exe.
+    const std::string dir = ExeDir();
+    if (!dir.empty()) {
+        std::ifstream old(dir.substr(0, dir.size() - 1) + "opendisplay_id");
+        if (old) std::getline(old, existing);
+        if (existing.size() == 32) {
+            std::ofstream out(path, std::ios::trunc);
+            if (out) out << existing << "\n";
+            return existing;
+        }
     }
     static std::mt19937_64 rng(
         std::random_device{}() ^ static_cast<uint64_t>(
@@ -147,6 +156,10 @@ struct App {
     net::MdnsAdvertiser mdns;      // Bonjour/mDNS advertisement
     std::string mdnsName;          // --name flag; empty => computer name
     bool vsync = false;            // --vsync flag; default off (low latency)
+    ReceiverConfig config;
+    int64_t resizeAtMs = 0;        // main thread, debounced adaptive hello
+    std::atomic<int> lastHelloWidth{0};
+    std::atomic<int> lastHelloHeight{0};
 
     // Stats
     uint64_t lastDecodedForFps = 0;
@@ -166,7 +179,6 @@ struct App {
 
     // Fullscreen
     bool fullscreen = false;
-    RECT restoreRect{};
 
     // Mouse -> touch input (PROTOCOL.md 6.1): the Mac sender maps touch
     // began/moved/ended onto real left-button mouse down/drag/up, and scroll
@@ -190,7 +202,9 @@ struct App {
     void ReapEndedSession();
     void HandleControl(net::Session* s, const ControlMessage& msg);
     void SendStats(net::Session* s);
-    void ToggleFullscreen();
+    void HelloSize(int* width, int* height) const;
+    void MaybeSendResizeHello();
+    void EnterFullscreen();
 
     // WndProc trampoline (whnd is the window being messaged; it is valid even
     // during CreateWindowEx, when the App::hwnd member is still null)
@@ -232,6 +246,7 @@ LRESULT App::WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (w > 0 && h > 0) {
                     renderer.Resize(w, h);
                     redrawNeeded = true;
+                    if (config.adaptiveResolution) resizeAtMs = SteadyNowMs();
                 }
             }
             return 0;
@@ -239,18 +254,28 @@ LRESULT App::WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp) {
             redrawNeeded = true;
             return DefWindowProc(whnd, msg, wp, lp);
         case WM_KEYDOWN:
-            switch (wp) {
-                case VK_F1: ToggleFullscreen(); return 0;
-                case VK_ESCAPE:
-                    if (fullscreen) ToggleFullscreen();
-                    return 0;
+        case WM_SYSKEYDOWN:
+            if (fullscreen && wp == 'Q' && !(lp & (1u << 30)) &&
+                (GetKeyState(VK_CONTROL) & 0x8000) &&
+                (GetKeyState(VK_SHIFT) & 0x8000) &&
+                (GetKeyState(VK_MENU) & 0x8000)) {
+                SendMessage(whnd, WM_CLOSE, 0, 0);
+                return 0;
             }
+            break;
+        case WM_SYSCOMMAND:
+            // Alt+F4 must not become another fullscreen exit shortcut.
+            if (fullscreen && (wp & 0xFFF0) == SC_CLOSE) return 0;
             break;
         case WM_CLOSE:
             {
                 std::lock_guard lock(sessionMutex);
                 if (session) session->SendClosing();
                 running = false;
+            }
+            if (fullscreen) {
+                fullscreen = false;
+                ShowCursor(TRUE);
             }
             DestroyWindow(whnd);
             return 0;
@@ -392,7 +417,7 @@ bool App::Setup(int port) {
         return false;
     }
 
-    // --- Window (client 1280x720; letterbox the stream inside) ---
+    // --- Window (configured client size; letterbox the stream inside) ---
     WNDCLASSEX wc{};
     wc.cbSize = sizeof(wc);
     wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -407,7 +432,7 @@ bool App::Setup(int port) {
     }
     LOG_INFO("window class registered (atom=%lu)", (unsigned long)atom);
 
-    const int initW = kDisplayWidth, initH = kDisplayHeight;
+    const int initW = config.width, initH = config.height;
     RECT rc{0, 0, initW, initH};
     AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
 
@@ -441,6 +466,7 @@ bool App::Setup(int port) {
     if (!renderer.Init(hwnd, device, initW, initH)) return false;
     renderer.SetVsync(vsync);
     LOG_INFO("renderer: vsync %s", vsync ? "on" : "off (lowest latency)");
+    if (config.fullscreen) EnterFullscreen();
 
     frameEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr); // auto-reset
 
@@ -560,7 +586,12 @@ void App::OnAccept(SOCKET sock, const std::string& peer) {
     }
     s->Start();
     // hello MUST be the first message we send (PROTOCOL.md 6.1).
-    s->SendHello(kDisplayWidth, kDisplayHeight, uiScale, helloId);
+    int helloWidth = 0, helloHeight = 0;
+    HelloSize(&helloWidth, &helloHeight);
+    s->SendHello(helloWidth, helloHeight, uiScale, helloId,
+                 config.bitrateKbps);
+    lastHelloWidth.store(helloWidth);
+    lastHelloHeight.store(helloHeight);
     lastStatsAtMs = SteadyNowMs();
 }
 
@@ -650,33 +681,65 @@ void App::SendStats(net::Session* s) {
     s->SendControl(od::BuildStats(fps, mbps, rtt, lastE2eMs, lastE2eMs));
 }
 
-void App::ToggleFullscreen() {
-    if (!fullscreen) {
-        fullscreen = true;
-        GetWindowRect(hwnd, &restoreRect);
-        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO mi{};
-        mi.cbSize = sizeof(mi);
-        GetMonitorInfo(mon, &mi);
-        SetWindowLong(hwnd, GWL_STYLE, WS_POPUP);
-        SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
-                     mi.rcMonitor.right - mi.rcMonitor.left,
-                     mi.rcMonitor.bottom - mi.rcMonitor.top,
-                     SWP_FRAMECHANGED);
-        ShowCursor(FALSE);
-    } else {
-        fullscreen = false;
-        SetWindowLong(hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW);
-        SetWindowPos(hwnd, nullptr, restoreRect.left, restoreRect.top,
-                     restoreRect.right - restoreRect.left,
-                     restoreRect.bottom - restoreRect.top,
-                     SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-        ShowCursor(TRUE);
+void App::HelloSize(int* width, int* height) const {
+    *width = config.width;
+    *height = config.height;
+    if (!config.adaptiveResolution || !hwnd) return;
+    RECT client{};
+    if (GetClientRect(hwnd, &client)) {
+        const int w = (client.right - client.left) & ~1;
+        const int h = (client.bottom - client.top) & ~1;
+        if (w >= 320 && w <= 8192 && h >= 240 && h <= 8192) {
+            *width = w;
+            *height = h;
+        }
     }
 }
 
+void App::MaybeSendResizeHello() {
+    if (!config.adaptiveResolution || resizeAtMs == 0 ||
+        SteadyNowMs() - resizeAtMs < 500) return;
+    resizeAtMs = 0;
+    int width = 0, height = 0;
+    HelloSize(&width, &height);
+    if (width == lastHelloWidth.load() && height == lastHelloHeight.load())
+        return;
+    std::shared_ptr<net::Session> active;
+    {
+        std::lock_guard lock(sessionMutex);
+        active = session;
+    }
+    if (!active) return;
+    active->SendHello(width, height, uiScale, helloId, config.bitrateKbps);
+    lastHelloWidth.store(width);
+    lastHelloHeight.store(height);
+    LOG_INFO("adaptive hello: display size %dx%d", width, height);
+}
+
+void App::EnterFullscreen() {
+    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfo(mon, &mi)) {
+        LOG_WARN("fullscreen: GetMonitorInfo failed (%lu)", GetLastError());
+        return;
+    }
+    const LONG oldStyle = GetWindowLong(hwnd, GWL_STYLE);
+    SetWindowLong(hwnd, GWL_STYLE, WS_POPUP);
+    if (!SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+                      mi.rcMonitor.right - mi.rcMonitor.left,
+                      mi.rcMonitor.bottom - mi.rcMonitor.top,
+                      SWP_FRAMECHANGED)) {
+        LOG_WARN("fullscreen: SetWindowPos failed (%lu)", GetLastError());
+        SetWindowLong(hwnd, GWL_STYLE, oldStyle);
+        return;
+    }
+    fullscreen = true;
+    ShowCursor(FALSE);
+}
+
 void App::Run() {
-    LOG_INFO("main loop running (F=fullscreen, Esc=exit fullscreen)");
+    LOG_INFO("main loop running (fullscreen exit: Ctrl+Shift+Alt+Q)");
     MSG msg;
     while (running) {
         const HANDLE waitables[1] = {frameEvent};
@@ -693,6 +756,7 @@ void App::Run() {
         }
         if (!running) break;
         ReapEndedSession();
+        MaybeSendResizeHello();
         const int64_t now = SteadyNowMs();
         if (now - lastPipelineLogMs_ >= 5000) {
             const uint64_t received = receivedVideo_.load(std::memory_order_relaxed);
@@ -782,6 +846,10 @@ void App::Run() {
 
 void App::TearDown() {
     running = false;
+    if (fullscreen) {
+        fullscreen = false;
+        ShowCursor(TRUE);
+    }
 
     // Take the session out under the lock, then close/destroy it OUTSIDE the
     // lock: ~Session joins the read thread, whose onClosed re-locks
@@ -835,7 +903,7 @@ std::string ExeDir() {
     if (n == 0 || n >= MAX_PATH) return {};
     std::string s(path, n);
     const auto pos = s.find_last_of("\\/");
-    return pos == std::string::npos ? std::string() : s.substr(0, pos);
+    return pos == std::string::npos ? std::string() : s.substr(0, pos + 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -870,6 +938,21 @@ int main(int argc, char** argv) {
         logFile ? std::string(logFile) : ExeDir() + "opendisplay_receiver.log";
     log::Init(logPath.c_str());
     LOG_INFO("opendisplay_windows receiver starting (log: %s)", logPath.c_str());
+    ReceiverConfig config;
+    const std::string configPath = ExeDir() + "config.ini";
+    std::ifstream configFile(configPath);
+    if (configFile) {
+        std::vector<std::string> warnings;
+        config = ParseConfig(configFile, warnings);
+        for (const auto& warning : warnings)
+            LOG_WARN("config.ini: %s", warning.c_str());
+    } else {
+        LOG_WARN("config.ini not found at %s; using defaults", configPath.c_str());
+    }
+    LOG_INFO("config: %dx%d fullscreen=%d adaptive_resolution=%d "
+             "requested_bitrate=%d kbps", config.width, config.height,
+             config.fullscreen ? 1 : 0, config.adaptiveResolution ? 1 : 0,
+             config.bitrateKbps);
 
     SetUnhandledExceptionFilter(UnhandledCrashHandler);
 
@@ -888,6 +971,7 @@ int main(int argc, char** argv) {
     App app;
     app.mdnsName = std::move(mdnsName);
     app.vsync = vsync;
+    app.config = config;
     int rc = 1;
     if (app.Setup(port)) {
         app.Run();

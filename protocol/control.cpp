@@ -81,6 +81,8 @@ std::string BuildHello(const HelloInfo& info) {
         s += ",\"maxEncodeWide\":" + std::to_string(*info.maxEncodeWide);
         s += ",\"maxEncodeHigh\":" + std::to_string(*info.maxEncodeHigh);
     }
+    if (info.bitrateKbps)
+        s += ",\"bitrateKbps\":" + std::to_string(*info.bitrateKbps);
     s += "}";
     return s;
 }
