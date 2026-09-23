@@ -158,6 +158,7 @@ struct App {
     bool vsync = false;            // --vsync flag; default off (low latency)
     ReceiverConfig config;
     int64_t resizeAtMs = 0;        // main thread, debounced adaptive hello
+    int64_t lastAdaptiveHelloAtMs = 0; // avoid overlapping Mac rebuilds
     std::atomic<int> lastHelloWidth{0};
     std::atomic<int> lastHelloHeight{0};
 
@@ -687,23 +688,29 @@ void App::HelloSize(int* width, int* height) const {
     if (!config.adaptiveResolution || !hwnd) return;
     RECT client{};
     if (GetClientRect(hwnd, &client)) {
-        const int w = (client.right - client.left) & ~1;
-        const int h = (client.bottom - client.top) & ~1;
-        if (w >= 320 && w <= 8192 && h >= 240 && h <= 8192) {
-            *width = w;
-            *height = h;
-        }
+        const auto size = AdaptiveDisplaySize(
+            config, client.right - client.left, client.bottom - client.top);
+        *width = size.width;
+        *height = size.height;
     }
 }
 
 void App::MaybeSendResizeHello() {
+    const int64_t now = SteadyNowMs();
     if (!config.adaptiveResolution || resizeAtMs == 0 ||
-        SteadyNowMs() - resizeAtMs < 500) return;
-    resizeAtMs = 0;
+        now - resizeAtMs < 500)
+        return;
     int width = 0, height = 0;
     HelloSize(&width, &height);
-    if (width == lastHelloWidth.load() && height == lastHelloHeight.load())
+    if (width == lastHelloWidth.load() && height == lastHelloHeight.load()) {
+        resizeAtMs = 0;
+        LOG_INFO("adaptive: window resize keeps display at %dx%d", width,
+                 height);
         return;
+    }
+    if (lastAdaptiveHelloAtMs != 0 && now - lastAdaptiveHelloAtMs < 20000)
+        return;
+    resizeAtMs = 0;
     std::shared_ptr<net::Session> active;
     {
         std::lock_guard lock(sessionMutex);
@@ -711,6 +718,7 @@ void App::MaybeSendResizeHello() {
     }
     if (!active) return;
     active->SendHello(width, height, uiScale, helloId, config.bitrateKbps);
+    lastAdaptiveHelloAtMs = now;
     lastHelloWidth.store(width);
     lastHelloHeight.store(height);
     LOG_INFO("adaptive hello: display size %dx%d", width, height);

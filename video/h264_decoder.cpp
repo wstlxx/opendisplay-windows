@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cstring>
 
+#include "../protocol/sps.h"
+
 #ifdef _WIN32
 #include "../net/log.h"
 
@@ -37,6 +39,7 @@ void H264Decoder::ResetMft() {
     decoder_.Reset();
     mftReady_ = false;
     sampleSize_ = 0;
+    visibleW_ = visibleH_ = 0;
     captureTimes_.clear();
 }
 
@@ -169,6 +172,13 @@ void H264Decoder::PublishNv12(IMFSample* outSample) {
         }
     }
     if (frame->width > 0 && frame->height > 0) {
+        // H.264 pads the coded raster to macroblock boundaries. For example,
+        // a 1412px desktop can be decoded as 1424px. Crop that padding before
+        // the renderer computes its letterbox rectangle and input mapping.
+        if (visibleW_ > 0 && visibleW_ <= frame->width)
+            frame->cropRight = frame->width - visibleW_;
+        if (visibleH_ > 0 && visibleH_ <= frame->height)
+            frame->cropBottom = frame->height - visibleH_;
         // Copy the decoded NV12 into the frame (CPU only). The D3D11 upload is
         // done on the render thread: a D3D11 immediate context is single-
         // threaded, so the decode thread must not call Map/Unmap on it.
@@ -323,6 +333,14 @@ void H264Decoder::Submit(net::VideoSample&& s) {
                 RequestKeyframe();
                 return;
             }
+        }
+    }
+
+    if (s.isKeyframe && !s.sps.empty()) {
+        const auto visible = od::ParseSpsDimensions(s.sps);
+        if (visible) {
+            visibleW_ = visible->width;
+            visibleH_ = visible->height;
         }
     }
 

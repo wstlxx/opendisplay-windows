@@ -153,6 +153,7 @@ private:
     UINT32 lastW_ = 0, lastH_ = 0;
     std::vector<uint8_t> lastSps_;
     std::vector<uint8_t> lastPps_;
+    int visibleW_ = 0, visibleH_ = 0; // SPS display area; MF reports coded size
     int64_t lastKfRequestMs = 0;
     bool hwDecoder_ = false;  // true when the hardware MFT is in use
     // Sender capture times in input order (no B-frames in the stream, so

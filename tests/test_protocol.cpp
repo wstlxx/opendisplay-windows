@@ -450,6 +450,24 @@ void TestReceiverConfig() {
     CHECK_EQ(rejected.bitrateKbps, 18000);
     CHECK(!rejected.fullscreen);
     CHECK_EQ(warnings.size(), 4u);
+
+    const auto widthOnly = od::app::AdaptiveDisplaySize(base, 1412, 720);
+    CHECK_EQ(widthOnly.width, 1280);
+    CHECK_EQ(widthOnly.height, 720);
+    const auto larger = od::app::AdaptiveDisplaySize(base, 1600, 900);
+    CHECK_EQ(larger.width, 1600);
+    CHECK_EQ(larger.height, 900);
+    const auto smaller = od::app::AdaptiveDisplaySize(base, 1000, 720);
+    CHECK_EQ(smaller.width, 960);
+    CHECK_EQ(smaller.height, 540);
+    const auto tiny = od::app::AdaptiveDisplaySize(base, 250, 200);
+    CHECK_EQ(tiny.width, 1280);
+    CHECK_EQ(tiny.height, 720);
+    auto evenBase = base;
+    evenBase.width = 1282;
+    const auto unchanged = od::app::AdaptiveDisplaySize(evenBase, 1282, 720);
+    CHECK_EQ(unchanged.width, 1282);
+    CHECK_EQ(unchanged.height, 720);
 }
 
 } // namespace

@@ -275,6 +275,7 @@ bool Renderer::EnsureUploadTexture(int w, int h) {
         LOG_ERROR("renderer: upload texture creation failed (%dx%d)", w, h);
         return false;
     }
+    LOG_INFO("renderer: upload texture %dx%d", w, h);
     uploadW_ = w;
     uploadH_ = h;
 
@@ -358,8 +359,12 @@ void Renderer::Present(const video::DecodedFrame* frame) {
     const long pn = ++presentN;
 
     if (frame && !frame->nv12.empty() && frame->width > 0 && frame->height > 0) {
-        lastVideoW_ = frame->width;
-        lastVideoH_ = frame->height;
+        const int visibleW = std::max(1, frame->width - frame->cropLeft -
+                                           frame->cropRight);
+        const int visibleH = std::max(1, frame->height - frame->cropTop -
+                                           frame->cropBottom);
+        lastVideoW_ = visibleW;
+        lastVideoH_ = visibleH;
         // Upload CPU NV12 into our persistent texture (this thread owns D3D).
         const bool up = EnsureUploadTexture(frame->width, frame->height);
         if (up)
@@ -371,10 +376,10 @@ void Renderer::Present(const video::DecodedFrame* frame) {
 
         // Letterbox rect in window pixels.
         const double scale =
-            std::min(double(clientW_) / frame->width,
-                     double(clientH_) / frame->height);
-        const double dw = frame->width * scale;
-        const double dh = frame->height * scale;
+            std::min(double(clientW_) / visibleW,
+                     double(clientH_) / visibleH);
+        const double dw = visibleW * scale;
+        const double dh = visibleH * scale;
         PerFrame pf{};
         pf.WinRect[0] = float((clientW_ - dw) / 2.0);
         pf.WinRect[1] = float((clientH_ - dh) / 2.0);

@@ -115,8 +115,13 @@ bitrate_kbps = 18000
 `width` and `height` set the initial window client size and the Mac virtual
 display size. With `adaptive_resolution = false`, resizing the window scales
 the existing stream. With `true`, the receiver sends a new `hello` after the
-window size has been stable for 500 ms; the Mac rebuilds its virtual display
-and encoder. Fullscreen startup uses the monitor size when adaptation is on.
+window size has been stable for 500 ms and the displayed video area crosses a
+25% resolution step. It preserves the configured display aspect ratio: widening
+a 1280×720 window to 1412×720 does not change the stream because the video is
+still shown at 1280×720 with side margins. At most one size request is sent
+every 20 seconds to avoid overlapping Mac rebuilds. A new size request makes
+the current Mac sender rebuild its virtual display and encoder, which can pause
+video. Fullscreen startup uses the monitor size when adaptation is on.
 The resolution values must be even (width 320-8192, height 240-8192).
 
 `bitrate_kbps` is sent as an optional `hello.bitrateKbps` request. The current
