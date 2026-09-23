@@ -19,9 +19,7 @@ struct DisplaySize {
     int height;
 };
 
-// Choose a stream raster that fits the client area while preserving the
-// configured desktop aspect ratio. Quarter-scale steps avoid rebuilding the
-// Mac virtual display for small window changes or letterbox-only growth.
+// Use the actual client area (rounded down to even pixels for NV12).
 DisplaySize AdaptiveDisplaySize(const ReceiverConfig& config,
                                 int clientWidth, int clientHeight);
 

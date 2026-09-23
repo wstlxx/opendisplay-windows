@@ -452,14 +452,17 @@ void TestReceiverConfig() {
     CHECK_EQ(warnings.size(), 4u);
 
     const auto widthOnly = od::app::AdaptiveDisplaySize(base, 1412, 720);
-    CHECK_EQ(widthOnly.width, 1280);
+    CHECK_EQ(widthOnly.width, 1412);
     CHECK_EQ(widthOnly.height, 720);
     const auto larger = od::app::AdaptiveDisplaySize(base, 1600, 900);
     CHECK_EQ(larger.width, 1600);
     CHECK_EQ(larger.height, 900);
     const auto smaller = od::app::AdaptiveDisplaySize(base, 1000, 720);
-    CHECK_EQ(smaller.width, 960);
-    CHECK_EQ(smaller.height, 540);
+    CHECK_EQ(smaller.width, 1000);
+    CHECK_EQ(smaller.height, 720);
+    const auto uneven = od::app::AdaptiveDisplaySize(base, 1477, 834);
+    CHECK_EQ(uneven.width, 1476);
+    CHECK_EQ(uneven.height, 834);
     const auto tiny = od::app::AdaptiveDisplaySize(base, 250, 200);
     CHECK_EQ(tiny.width, 1280);
     CHECK_EQ(tiny.height, 720);

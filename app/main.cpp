@@ -205,7 +205,6 @@ struct App {
     void SendStats(net::Session* s);
     void HelloSize(int* width, int* height) const;
     void MaybeSendResizeHello();
-    void EnterFullscreen();
 
     // WndProc trampoline (whnd is the window being messaged; it is valid even
     // during CreateWindowEx, when the App::hwnd member is still null)
@@ -281,6 +280,7 @@ LRESULT App::WndProcHandle(HWND whnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(whnd);
             return 0;
         case WM_GETMINMAXINFO: {
+            if (fullscreen) return DefWindowProc(whnd, msg, wp, lp);
             // Never let the window exceed the work area.
             auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
             HMONITOR mon = MonitorFromWindow(whnd, MONITOR_DEFAULTTONEAREST);
@@ -433,9 +433,10 @@ bool App::Setup(int port) {
     }
     LOG_INFO("window class registered (atom=%lu)", (unsigned long)atom);
 
-    const int initW = config.width, initH = config.height;
-    RECT rc{0, 0, initW, initH};
-    AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
+    const bool startFullscreen = config.fullscreen;
+    const DWORD windowStyle = startFullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+    RECT rc{0, 0, config.width, config.height};
+    if (!startFullscreen) AdjustWindowRect(&rc, windowStyle, FALSE);
 
     // Center on the primary monitor's work area (fall back to 0,0 if the
     // monitor query fails, e.g. no interactive desktop).
@@ -444,30 +445,46 @@ bool App::Setup(int port) {
     MONITORINFO mi{};
     mi.cbSize = sizeof(mi);
     if (GetMonitorInfo(mon, &mi)) {
-        x = mi.rcWork.left + (mi.rcWork.right - mi.rcWork.left -
-                              (rc.right - rc.left)) / 2;
-        y = mi.rcWork.top + (mi.rcWork.bottom - mi.rcWork.top -
-                             (rc.bottom - rc.top)) / 2;
+        if (startFullscreen) {
+            x = mi.rcMonitor.left;
+            y = mi.rcMonitor.top;
+            rc.right = mi.rcMonitor.right - mi.rcMonitor.left;
+            rc.bottom = mi.rcMonitor.bottom - mi.rcMonitor.top;
+        } else {
+            x = mi.rcWork.left + (mi.rcWork.right - mi.rcWork.left -
+                                  (rc.right - rc.left)) / 2;
+            y = mi.rcWork.top + (mi.rcWork.bottom - mi.rcWork.top -
+                                 (rc.bottom - rc.top)) / 2;
+        }
     }
 
     const int ww = rc.right - rc.left, wh = rc.bottom - rc.top;
     LOG_INFO("creating window at (%d,%d) size %dx%d", x, y, ww, wh);
 
-    hwnd = CreateWindowEx(0, L"OpenDisplayReceiver", L"OpenDisplay",
-                          WS_OVERLAPPEDWINDOW, x, y, ww, wh, nullptr, nullptr,
+    fullscreen = startFullscreen;
+    hwnd = CreateWindowEx(startFullscreen ? WS_EX_TOPMOST : 0,
+                          L"OpenDisplayReceiver", L"OpenDisplay",
+                          windowStyle, x, y, ww, wh, nullptr, nullptr,
                           GetModuleHandle(nullptr), this);
     if (!hwnd) {
+        fullscreen = false;
         LOG_ERROR("CreateWindowEx failed: %lu", GetLastError());
         return false;
     }
     uiScale = static_cast<double>(GetDpiForWindow(hwnd)) / 96.0;
     ShowWindow(hwnd, SW_SHOW);
+    if (fullscreen) ShowCursor(FALSE);
     LOG_INFO("window shown; calling renderer.Init");
 
-    if (!renderer.Init(hwnd, device, initW, initH)) return false;
+    RECT client{};
+    if (!GetClientRect(hwnd, &client)) return false;
+    const int clientW = client.right - client.left;
+    const int clientH = client.bottom - client.top;
+    LOG_INFO("window client size %dx%d (fullscreen=%d)", clientW,
+             clientH, fullscreen ? 1 : 0);
+    if (!renderer.Init(hwnd, device, clientW, clientH)) return false;
     renderer.SetVsync(vsync);
     LOG_INFO("renderer: vsync %s", vsync ? "on" : "off (lowest latency)");
-    if (config.fullscreen) EnterFullscreen();
 
     frameEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr); // auto-reset
 
@@ -722,28 +739,6 @@ void App::MaybeSendResizeHello() {
     lastHelloWidth.store(width);
     lastHelloHeight.store(height);
     LOG_INFO("adaptive hello: display size %dx%d", width, height);
-}
-
-void App::EnterFullscreen() {
-    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi{};
-    mi.cbSize = sizeof(mi);
-    if (!GetMonitorInfo(mon, &mi)) {
-        LOG_WARN("fullscreen: GetMonitorInfo failed (%lu)", GetLastError());
-        return;
-    }
-    const LONG oldStyle = GetWindowLong(hwnd, GWL_STYLE);
-    SetWindowLong(hwnd, GWL_STYLE, WS_POPUP);
-    if (!SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
-                      mi.rcMonitor.right - mi.rcMonitor.left,
-                      mi.rcMonitor.bottom - mi.rcMonitor.top,
-                      SWP_FRAMECHANGED)) {
-        LOG_WARN("fullscreen: SetWindowPos failed (%lu)", GetLastError());
-        SetWindowLong(hwnd, GWL_STYLE, oldStyle);
-        return;
-    }
-    fullscreen = true;
-    ShowCursor(FALSE);
 }
 
 void App::Run() {

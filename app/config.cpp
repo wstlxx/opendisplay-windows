@@ -83,18 +83,10 @@ DisplaySize AdaptiveDisplaySize(const ReceiverConfig& config,
                                 int clientWidth, int clientHeight) {
     const DisplaySize base{config.width, config.height};
     if (clientWidth < 320 || clientHeight < 240) return base;
-    // The renderer letterboxes to the desktop's aspect ratio. Growing only
-    // one window axis does not enlarge the displayed video and should not
-    // trigger a costly Mac display/capture rebuild.
-    int quarters = std::min(clientWidth * 4 / config.width,
-                            clientHeight * 4 / config.height);
-    quarters = std::min(quarters, 16); // up to 4x the configured raster
-    if (quarters < 1) return base;
-    const int width = (config.width * quarters / 4) & ~1;
-    const int height = (config.height * quarters / 4) & ~1;
-    if (width < 320 || width > 8192 || height < 240 || height > 8192)
-        return base;
-    return {width, height};
+    // H.264 NV12 requires even dimensions. Match both client axes so changing
+    // only the window width still changes the Mac virtual display width.
+    return {std::min(clientWidth, 8192) & ~1,
+            std::min(clientHeight, 8192) & ~1};
 }
 
 } // namespace od::app
